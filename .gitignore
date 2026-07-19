@@ -1,0 +1,36 @@
+# Dependencies
+node_modules/
+bun.lockb
+
+# Build output
+dist/
+build/
+*.exe
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
+
+# Local dev
+*.log
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+.env
+.env.local
+
+# Electrobun
+.electrobun/
+
+# Tauri / Rust
+src-tauri/target/
+src-tauri/gen/
+
+# Datos de prueba del simulador
+data-portable/

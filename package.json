@@ -1,0 +1,30 @@
+{
+  "name": "wiener-xs20-bridge",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Bridge entre el analizador hematologico Wiener XS 20 y una app Windows",
+  "workspaces": [
+    "apps/*",
+    "packages/*",
+    "scripts"
+  ],
+  "scripts": {
+    "dev:service": "cd apps/service && bun run dev",
+    "dev:ui": "cd apps/ui && bun run dev",
+    "dev:simulator": "bun run scripts/simulator/index.ts",
+    "test": "cd apps/service && bun test",
+    "build:service:linux": "cd apps/service && bun run build:linux",
+    "build:service:windows": "cd apps/service && bun run build:windows",
+    "build:service": "cd apps/service && bun run build",
+    "build:ui": "cd apps/ui && bun run build",
+    "tauri:build": "cd apps/ui && bun run tauri build",
+    "typecheck": "cd packages/shared && bun run typecheck && cd ../../apps/service && bun run typecheck && cd ../ui && bun run typecheck && cd ../../scripts && bun run typecheck"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "@types/bun": "latest"
+  },
+  "engines": {
+    "bun": ">=1.1.0"
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "name": "@xs20/service",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "src/main.ts",
+  "scripts": {
+    "dev": "bun run src/main.ts --console --log-level=debug",
+    "start": "bun run src/main.ts",
+    "test": "bun test",
+    "build:linux": "bun build src/main.ts --compile --target=bun-linux-x64 --outfile dist/xs20-service-linux",
+    "build:windows": "bun build src/main.ts --compile --target=bun-windows-x64 --outfile dist/xs20-service.exe",
+    "build": "bun run build:linux && bun run build:windows",
+    "typecheck": "bunx tsc --noEmit"
+  },
+  "dependencies": {
+    "@xs20/shared": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0"
+  }
+}
