@@ -1,0 +1,13 @@
+{
+  "name": "@xs20/scripts",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "simulator": "bun run simulator/index.ts",
+    "typecheck": "bunx tsc --noEmit"
+  },
+  "dependencies": {
+    "@xs20/shared": "workspace:*"
+  }
+}

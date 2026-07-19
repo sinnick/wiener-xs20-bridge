@@ -1,0 +1,116 @@
+# Wiener XS 20 Bridge
+
+Aplicación Windows para recibir, almacenar y visualizar resultados de hemograma
+del analizador **Wiener Lab Counter XS 20** (rebrand del Mindray BC-20s) vía
+HL7 v2.3.1 sobre MLLP/TCP.
+
+## Arquitectura
+
+Monorepo con dos procesos independientes que corren en la misma PC del laboratorio:
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│  PC Windows del laboratorio                                   │
+│                                                               │
+│  ┌──────────────────────┐         ┌────────────────────┐     │
+│  │ apps/service         │         │ apps/ui            │     │
+│  │ (.exe / Win service) │◄───────►│ (Tauri + React)    │     │
+│  │                      │  HTTP   │                    │     │
+│  │ - TCP listener MLLP  │ :7700   │ - Dashboard        │     │
+│  │ - Parser HL7 v2.3.1  │         │ - Detalle + histos │     │
+│  │ - SQLite             │         │ - Logs en vivo     │     │
+│  │ - HTTP API + SSE     │         │ - Estado           │     │
+│  └──────────┬───────────┘         └────────────────────┘     │
+│             │ TCP :5100 (configurable)                        │
+└─────────────┼─────────────────────────────────────────────────┘
+              ▲
+              │ HL7 sobre MLLP
+       ┌──────┴──────┐
+       │   XS 20     │
+       └─────────────┘
+```
+
+La UI (Tauri) usa el **WebView2** que Windows 11 ya trae, así que el instalador
+es liviano. El shell nativo lanza el servicio al abrir y lo cierra al salir.
+
+## Workspaces
+
+| Path | Propósito | Stack |
+|------|-----------|-------|
+| `apps/service` | TCP listener MLLP + parser HL7 + SQLite + HTTP API | Bun, bun:sqlite |
+| `apps/ui` | App de escritorio (interfaz) | Tauri, React, Vite, Tailwind |
+| `packages/shared` | Tipos + generador de mensajes de prueba | TypeScript |
+| `scripts` | Simulador del XS 20 (equipo virtual) | Bun |
+| `docs` | Documentación técnica | Markdown |
+
+## Estado
+
+- **Servicio**: ✅ completo. 74 tests verdes. Robustecido (retención de datos,
+  idle timeout, protocolo aislado en `protocol-map.ts`). `.exe` de Windows probado
+  en Windows 11 real.
+- **Simulador**: ✅ completo. Genera mensajes HL7 realistas y variados en 4 modos
+  (single / batch / loop / fixture). Tu "equipo virtual" para desarrollar sin el
+  analizador físico.
+- **UI**: ✅ completa. Cuatro pantallas (resultados, detalle, actividad, estado).
+  Typecheck limpio, buildea. Contrato con la API verificado.
+- **Tauri**: ✅ código completo y validado. El crate Rust compila y la app corre
+  (lanza el servicio, la API responde). Solo falta compilar el instalador Windows
+  en una máquina Windows — ver `docs/10-build-windows.md`.
+
+## Quickstart (desarrollo, sin equipo físico)
+
+```bash
+bun install
+
+# Terminal 1: el servicio
+bun run dev:service
+
+# Terminal 2: datos de prueba
+bun run scripts/simulator/index.ts --mode=batch --count=30
+#   o en vivo, simulando un día de laboratorio:
+bun run scripts/simulator/index.ts --mode=loop --interval=4000
+
+# Terminal 3: la UI (se abre en http://localhost:1420)
+bun run dev:ui
+```
+
+Si el servicio pide token, en la consola del navegador:
+`localStorage.setItem("xs20_token", "<token de api-token.txt>")`
+
+## Tests y typecheck
+
+```bash
+bun test          # 74 tests del servicio
+bun run typecheck # shared + service + ui + scripts
+```
+
+## Build
+
+```bash
+# Servicio → .exe de Windows
+bun run build:service:windows        # → apps/service/dist/xs20-service.exe
+
+# App de escritorio → instalador Windows (correr en Windows)
+# Ver docs/10-build-windows.md para el paso a paso.
+cd apps/ui && cargo tauri build
+```
+
+## Documentación
+
+- [`docs/01-protocolo-hl7.md`](docs/01-protocolo-hl7.md) — El protocolo HL7 v2.3.1 del XS 20.
+- [`docs/02-schema-db.md`](docs/02-schema-db.md) — Schema de la base SQLite.
+- [`docs/03-contrato-http.md`](docs/03-contrato-http.md) — Endpoints HTTP + SSE.
+- [`docs/04-mapeo-obx.md`](docs/04-mapeo-obx.md) — Mapeo OBX → hemograma.
+- [`docs/05-debug-y-logs.md`](docs/05-debug-y-logs.md) — Debug en dev y producción.
+- [`docs/06-plan-fase-1.md`](docs/06-plan-fase-1.md) — Plan Fase 1 (✅ completado).
+- [`docs/07-instalacion-windows.md`](docs/07-instalacion-windows.md) — Instalar el servicio con NSSM.
+- [`docs/08-quickstart-linux.md`](docs/08-quickstart-linux.md) — Quickstart en Linux.
+- [`docs/09-ui-tauri.md`](docs/09-ui-tauri.md) — La UI y su arquitectura.
+- [`docs/10-build-windows.md`](docs/10-build-windows.md) — **Compilar el instalador Windows.**
+
+## Cuando llegue el equipo físico
+
+El primer archivo a revisar es **`apps/service/src/hl7/protocol-map.ts`**. Ahí está
+aislado todo lo que se dedujo de la documentación del fabricante, marcado por nivel
+de confianza (`[CONFIRMADO-DOC]`, `[INFERIDO]`, `[SOSPECHA]`). Si algún valor no
+matchea con el equipo real, se corrige ahí y en ningún otro lado.

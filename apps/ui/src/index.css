@@ -1,0 +1,29 @@
+@import url("https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap");
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    color-scheme: light;
+  }
+  html, body, #root {
+    height: 100%;
+  }
+  body {
+    @apply bg-bg text-text font-sans antialiased;
+    font-size: 16px;
+    margin: 0;
+  }
+  /* Focus ring en vez de border (regla de taste) */
+  *:focus-visible {
+    outline: none;
+    @apply ring-2 ring-accent ring-offset-1 ring-offset-bg;
+  }
+}
+
+@layer utilities {
+  /* tabular numbers para que las columnas de valores no bailen */
+  .tnum { font-variant-numeric: tabular-nums; }
+}
