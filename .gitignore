@@ -28,9 +28,15 @@ Thumbs.db
 # Electrobun
 .electrobun/
 
-# Tauri / Rust
-src-tauri/target/
-src-tauri/gen/
+# Tauri / Rust (artefactos de compilacion; el Cargo.lock SI se versiona)
+**/target/
+**/src-tauri/gen/
 
 # Datos de prueba del simulador
 data-portable/
+
+# Staging del paquete de distribucion (el .zip listo para copiar; se regenera)
+paquete-distribucion/
+
+# Instalador versionado a proposito (excepcion a la regla *.exe de arriba)
+!installers/*.exe

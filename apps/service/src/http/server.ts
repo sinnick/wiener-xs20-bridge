@@ -19,13 +19,18 @@ import type {
   ListResultsResponse,
   LogEvent,
   ResultSummary,
+  ServiceConfig,
+  UpdateConfigRequest,
+  UpdateConfigResponse,
 } from "@xs20/shared";
 import { encodeHistogramBase64 } from "@xs20/shared";
 
 import type { XsRepo } from "../db/repo.js";
+import type { LogLevel } from "../logger.js";
 import type { Logger } from "../logger.js";
 import type { TcpServer } from "../listener/tcp-server.js";
 import type { ResolvedConfig } from "../config.js";
+import { saveSettings } from "../settings-store.js";
 
 export interface HttpServerOptions {
   repo: XsRepo;
@@ -90,6 +95,12 @@ export class HttpServer {
       } else if (path === "/api/config" && req.method === "GET") {
         if (!this.checkAuth(req, url)) return this.unauthorized();
         res = this.getConfig();
+      } else if (
+        path === "/api/config" &&
+        (req.method === "PUT" || req.method === "POST")
+      ) {
+        if (!this.checkAuth(req, url)) return this.unauthorized();
+        res = await this.updateConfig(req);
       } else {
         res = json({ error: { code: "NOT_FOUND", message: path } }, 404);
       }
@@ -192,9 +203,9 @@ export class HttpServer {
     return json(body);
   }
 
-  private getConfig(): Response {
+  private configPayload(): ServiceConfig {
     const c = this.opts.config;
-    return json({
+    return {
       tcpPort: c.tcpPort,
       tcpHost: c.tcpHost,
       httpPort: c.httpPort,
@@ -202,7 +213,144 @@ export class HttpServer {
       logDir: c.logDir,
       logLevel: c.logLevel,
       rawRetentionDays: c.rawRetentionDays,
+    };
+  }
+
+  private getConfig(): Response {
+    return json(this.configPayload());
+  }
+
+  /**
+   * PUT /api/config — cambia la config editable desde la app.
+   *
+   * Aplica en caliente: host/puerto del listener TCP se reconfiguran sin
+   * reiniciar el servicio, el nivel de log cambia al instante y la retencion
+   * se usa en la proxima purga. Persiste el resultado en settings.json para
+   * que sobreviva a reinicios. Devuelve restartRequired=false porque nada de
+   * esto necesita reiniciar.
+   */
+  private async updateConfig(req: Request): Promise<Response> {
+    let body: UpdateConfigRequest;
+    try {
+      body = (await req.json()) as UpdateConfigRequest;
+    } catch {
+      return json(
+        { error: { code: "VALIDATION_ERROR", message: "El cuerpo no es JSON válido" } },
+        400,
+      );
+    }
+    if (typeof body !== "object" || body === null) {
+      return json(
+        { error: { code: "VALIDATION_ERROR", message: "Se esperaba un objeto" } },
+        400,
+      );
+    }
+
+    const cfg = this.opts.config;
+    const errors: string[] = [];
+
+    let newTcpHost = cfg.tcpHost;
+    if (body.tcpHost !== undefined) {
+      const h = String(body.tcpHost).trim();
+      if (!isValidHost(h)) {
+        errors.push("La IP a escuchar debe ser una IPv4 válida, 0.0.0.0 o localhost");
+      } else {
+        newTcpHost = h;
+      }
+    }
+
+    let newTcpPort = cfg.tcpPort;
+    if (body.tcpPort !== undefined) {
+      if (!Number.isInteger(body.tcpPort) || body.tcpPort < 1 || body.tcpPort > 65535) {
+        errors.push("El puerto TCP debe ser un entero entre 1 y 65535");
+      } else if (body.tcpPort === cfg.httpPort) {
+        errors.push(`El puerto TCP no puede ser el mismo que el de la API (${cfg.httpPort})`);
+      } else {
+        newTcpPort = body.tcpPort;
+      }
+    }
+
+    let newLogLevel = cfg.logLevel;
+    if (body.logLevel !== undefined) {
+      if (!["debug", "info", "warn", "error"].includes(body.logLevel)) {
+        errors.push("El nivel de log debe ser debug, info, warn o error");
+      } else {
+        newLogLevel = body.logLevel;
+      }
+    }
+
+    let newRetention = cfg.rawRetentionDays;
+    if (body.rawRetentionDays !== undefined) {
+      if (
+        !Number.isInteger(body.rawRetentionDays) ||
+        body.rawRetentionDays < 0 ||
+        body.rawRetentionDays > 3650
+      ) {
+        errors.push("La retención debe ser un entero entre 0 y 3650 días");
+      } else {
+        newRetention = body.rawRetentionDays;
+      }
+    }
+
+    if (errors.length > 0) {
+      return json(
+        { error: { code: "VALIDATION_ERROR", message: errors.join(". ") } },
+        400,
+      );
+    }
+
+    // Reconfigurar el listener TCP en caliente si cambio host o puerto.
+    if (newTcpHost !== cfg.tcpHost || newTcpPort !== cfg.tcpPort) {
+      try {
+        this.opts.tcp.reconfigure(newTcpHost, newTcpPort);
+      } catch (e) {
+        return json(
+          {
+            error: {
+              code: "TCP_BIND_FAILED",
+              message: `No se pudo escuchar en ${newTcpHost}:${newTcpPort}. ${(e as Error).message}`,
+            },
+          },
+          409,
+        );
+      }
+      cfg.tcpHost = newTcpHost;
+      cfg.tcpPort = newTcpPort;
+    }
+
+    // Nivel de log en caliente.
+    if (newLogLevel !== cfg.logLevel) {
+      cfg.logLevel = newLogLevel;
+      this.opts.logger.setLevel(newLogLevel as LogLevel);
+    }
+
+    // Retencion: se aplica en la proxima corrida de purga.
+    cfg.rawRetentionDays = newRetention;
+
+    // Persistir para que sobreviva a reinicios.
+    try {
+      saveSettings(cfg.settingsPath, {
+        tcpPort: cfg.tcpPort,
+        tcpHost: cfg.tcpHost,
+        logLevel: cfg.logLevel,
+        rawRetentionDays: cfg.rawRetentionDays,
+      });
+    } catch (e) {
+      this.opts.logger.error("config.persist_failed", { error: (e as Error).message });
+    }
+
+    this.opts.logger.info("config.updated", {
+      tcpHost: cfg.tcpHost,
+      tcpPort: cfg.tcpPort,
+      logLevel: cfg.logLevel,
+      rawRetentionDays: cfg.rawRetentionDays,
     });
+
+    const resp: UpdateConfigResponse = {
+      config: this.configPayload(),
+      restartRequired: false,
+    };
+    return json(resp);
   }
 
   private logStream(): Response {
@@ -255,6 +403,21 @@ function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
     headers: { "Content-Type": "application/json; charset=utf-8" },
+  });
+}
+
+/**
+ * Valida un host para el listener TCP: aceptamos "localhost", "0.0.0.0"
+ * (todas las interfaces) o una IPv4 con octetos 0-255. No aceptamos hostnames
+ * arbitrarios porque el listener bindea una interfaz local concreta.
+ */
+function isValidHost(host: string): boolean {
+  if (host === "localhost") return true;
+  const m = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (!m) return false;
+  return m.slice(1, 5).every((oct) => {
+    const n = Number(oct);
+    return n >= 0 && n <= 255 && String(n) === oct;
   });
 }
 

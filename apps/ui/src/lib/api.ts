@@ -14,6 +14,9 @@ import type {
   HealthResponse,
   ListResultsResponse,
   ResultSummary,
+  ServiceConfig,
+  UpdateConfigRequest,
+  UpdateConfigResponse,
 } from "@xs20/shared";
 
 const BASE = import.meta.env.VITE_API_BASE ?? "";
@@ -27,11 +30,24 @@ let cachedToken: string | null = null;
  * - En el navegador (dev): lo toma del localStorage.
  * Se llama una vez al arrancar (initToken).
  */
+/**
+ * Ubica la funcion `invoke` de Tauri. Segun la version/config puede estar en
+ * `window.__TAURI__.invoke`, `window.__TAURI__.tauri.invoke` o el low-level
+ * `window.__TAURI_INVOKE__`. Probamos las tres para no depender de una sola.
+ */
+function getTauriInvoke(): ((cmd: string) => Promise<string>) | undefined {
+  const w = window as unknown as {
+    __TAURI__?: {
+      invoke?: (cmd: string) => Promise<string>;
+      tauri?: { invoke?: (cmd: string) => Promise<string> };
+    };
+    __TAURI_INVOKE__?: (cmd: string) => Promise<string>;
+  };
+  return w.__TAURI__?.invoke ?? w.__TAURI__?.tauri?.invoke ?? w.__TAURI_INVOKE__;
+}
+
 export async function initToken(): Promise<void> {
-  // Detectar si estamos dentro de Tauri (v1: window.__TAURI__.invoke).
-  const tauriInvoke = (window as unknown as {
-    __TAURI__?: { invoke?: (cmd: string) => Promise<string> };
-  }).__TAURI__?.invoke;
+  const tauriInvoke = getTauriInvoke();
 
   if (tauriInvoke) {
     try {
@@ -105,6 +121,46 @@ export function getResult(id: string): Promise<GetResultResponse> {
   return apiGet<GetResultResponse>(`/api/results/${encodeURIComponent(id)}`);
 }
 
+// ─── Configuracion ───────────────────────────────────────────────────────────
+
+export function getConfig(): Promise<ServiceConfig> {
+  return apiGet<ServiceConfig>("/api/config");
+}
+
+export async function updateConfig(
+  patch: UpdateConfigRequest,
+): Promise<UpdateConfigResponse> {
+  const res = await fetch(`${BASE}/api/config`, {
+    method: "PUT",
+    headers: {
+      "X-XS20-Token": getToken(),
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(patch),
+  });
+  if (!res.ok) {
+    throw new ApiError(res.status, await res.text());
+  }
+  return (await res.json()) as UpdateConfigResponse;
+}
+
+/**
+ * Extrae un mensaje legible del cuerpo de error del servicio
+ * ({ error: { message } }). Si no se puede parsear, devuelve el texto crudo.
+ */
+export function apiErrorMessage(err: unknown): string {
+  if (err instanceof ApiError) {
+    try {
+      const parsed = JSON.parse(err.body) as { error?: { message?: string } };
+      if (parsed?.error?.message) return parsed.error.message;
+    } catch {
+      // no era JSON
+    }
+    return err.body || `HTTP ${err.status}`;
+  }
+  return err instanceof Error ? err.message : String(err);
+}
+
 /**
  * Se suscribe al stream SSE de logs. Devuelve una funcion para cerrar.
  */
@@ -129,4 +185,11 @@ export interface LogLine {
   ctx?: Record<string, unknown>;
 }
 
-export type { ResultSummary, GetResultResponse, HealthResponse };
+export type {
+  ResultSummary,
+  GetResultResponse,
+  HealthResponse,
+  ServiceConfig,
+  UpdateConfigRequest,
+  UpdateConfigResponse,
+};
