@@ -52,10 +52,13 @@ es liviano. El shell nativo lanza el servicio al abrir y lo cierra al salir.
   (single / batch / loop / fixture). Tu "equipo virtual" para desarrollar sin el
   analizador físico.
 - **UI**: ✅ completa. Cuatro pantallas (resultados, detalle, actividad, estado).
-  Typecheck limpio, buildea. Contrato con la API verificado.
-- **Tauri**: ✅ código completo y validado. El crate Rust compila y la app corre
-  (lanza el servicio, la API responde). Solo falta compilar el instalador Windows
-  en una máquina Windows — ver `docs/10-build-windows.md`.
+  Typecheck limpio, buildea. Contrato con la API verificado. La pantalla **Estado**
+  permite configurar IP/puerto de escucha, nivel de log y retención **desde la app**,
+  aplicados en caliente (sin reiniciar el servicio).
+- **Tauri**: ✅ corre en Windows 11 real. El crate Rust compila y la app abre la
+  ventana nativa, lanza el servicio, lee el token (`withGlobalTauri`) y la API
+  responde. Solo falta compilar el instalador `.msi/.nsis` — ver
+  `docs/10-build-windows.md`.
 
 ## Quickstart (desarrollo, sin equipo físico)
 

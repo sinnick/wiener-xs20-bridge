@@ -70,8 +70,10 @@ Desde la raíz del repo:
 # 1. Instalar dependencias del monorepo
 bun install
 
-# 2. Instalar el CLI de Tauri (una vez)
-cargo install tauri-cli --version "^1.6"
+# 2. El CLI de Tauri v1 ya viene como devDep de apps/ui (@tauri-apps/cli, binario
+#    precompilado). Se usa con `bun run tauri`. NO hace falta `cargo install tauri-cli`
+#    (compila el CLI desde fuente — lento y frágil). Si preferís el de cargo:
+#    cargo install tauri-cli --version "^1.6"
 
 # 3. Compilar el servicio a .exe (lo necesita la app para lanzarlo)
 cd apps\service
@@ -80,7 +82,7 @@ cd ..\..
 
 # 4. Compilar la app de escritorio (esto genera el instalador)
 cd apps\ui
-cargo tauri build
+bun run tauri build
 ```
 
 El instalador queda en:
@@ -113,6 +115,10 @@ el día: los resultados se reciben aunque nadie tenga la app abierta.
 - **"error: Microsoft Visual C++ ... required"** → mismo tema, reinstalá los Build Tools.
 - **La app abre pero se ve en blanco** → falta el WebView2 Runtime (paso 1.2).
 - **"cargo: command not found"** → cerrá y reabrí la terminal después de instalar Rust.
+- **`ring`/`zstd-sys` fallan con "Acceso denegado" o cc-rs no encuentra el compilador**
+  → hay una variable de entorno `CC` apuntando a algo que no es un compilador C
+  (ver `echo $env:CC`). Rust la usa para compilar deps nativas y explota. Solución:
+  `Remove-Item Env:\CC` (temporal) o borrarla del entorno de usuario (permanente).
 - **Warnings de Rust al compilar** → normales, ignorables mientras diga
   `Finished` al final.
 

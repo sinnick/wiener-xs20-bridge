@@ -95,6 +95,43 @@ export class TcpServer {
     this.opts.logger.info("tcp.listener.down");
   }
 
+  /**
+   * Cambia host/puerto del listener en caliente, sin reiniciar el servicio.
+   * Cierra las conexiones actuales (el equipo reconecta solo) y vuelve a
+   * escuchar en la nueva direccion. Si el bind nuevo falla (puerto ocupado,
+   * IP invalida), revierte a la direccion anterior y relanza el error para
+   * que el HTTP handler devuelva 409.
+   */
+  reconfigure(host: string, port: number): void {
+    if (host === this.opts.host && port === this.opts.port && this.listener) {
+      return; // sin cambios
+    }
+
+    const prevHost = this.opts.host;
+    const prevPort = this.opts.port;
+    const wasListening = this.listener !== null;
+
+    if (wasListening) this.stop();
+    this.opts.host = host;
+    this.opts.port = port;
+
+    if (!wasListening) return; // estaba con --no-listen: solo guardamos los valores
+
+    try {
+      this.start();
+    } catch (e) {
+      // Rollback: volvemos a la direccion previa para no dejar el listener caido.
+      this.opts.host = prevHost;
+      this.opts.port = prevPort;
+      try {
+        this.start();
+      } catch {
+        // Si tambien falla lo previo, ya no hay listener; se refleja en health.
+      }
+      throw e;
+    }
+  }
+
   /** Cierra conexiones sin actividad por mas de CONNECTION_IDLE_TIMEOUT_MS. */
   private sweepIdleConnections(): void {
     const now = Date.now();

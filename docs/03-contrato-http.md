@@ -74,9 +74,26 @@ Devuelve la configuración actual del servicio (`ServiceConfig`).
 
 #### `PUT /api/config`
 
-Actualiza configuración. Body: `UpdateConfigRequest`. Respuesta: `UpdateConfigResponse` con flag `restartRequired`.
+Actualiza configuración. Body: `UpdateConfigRequest` (campos editables: `tcpHost`,
+`tcpPort`, `logLevel`, `rawRetentionDays` — todos opcionales, se aplica solo lo enviado).
+Respuesta: `UpdateConfigResponse` con la config resultante y el flag `restartRequired`.
 
-Cambios que requieren restart: `tcpPort`, `tcpHost`, `httpPort`. Cambios en caliente: `logLevel`, `rawRetentionDays`.
+**Todos los cambios se aplican en caliente, sin reiniciar el servicio** (`restartRequired`
+siempre `false`):
+
+- `tcpHost` / `tcpPort`: reinician solo el listener TCP (`TcpServer.reconfigure`). Las
+  conexiones abiertas del analizador se cierran y el equipo reconecta solo. Si el nuevo
+  host/puerto no se puede bindear (ocupado, IP no asignable), se revierte al anterior y
+  responde `409 TCP_BIND_FAILED`.
+- `logLevel`: cambia el nivel del logger al instante.
+- `rawRetentionDays`: se usa en la próxima corrida de purga.
+
+El `httpPort` **no** es editable por acá (la UI perdería la conexión con la API). Los
+valores válidos se persisten en `<dataDir>/config/settings.json` y se recargan al arrancar.
+
+Validaciones (todas devuelven `400 VALIDATION_ERROR` con mensaje): `tcpPort` entero 1–65535
+y distinto del `httpPort`; `tcpHost` IPv4 válida, `0.0.0.0` o `localhost`; `logLevel` en
+`debug|info|warn|error`; `rawRetentionDays` entero 0–3650.
 
 ### Health / status
 

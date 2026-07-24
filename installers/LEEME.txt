@@ -1,0 +1,57 @@
+================================================================
+  Wiener XS 20 Bridge — Instalación
+================================================================
+
+Qué es
+------
+Aplicación para recibir, guardar y ver los resultados de hemograma
+del analizador Wiener Lab Counter XS 20 en esta PC.
+
+El instalador ya trae TODO adentro (la app + el servicio que escucha
+al analizador). No hace falta instalar nada más.
+
+
+Instalar (1 minuto)
+-------------------
+1. Doble clic en:  "Wiener XS 20_0.1.0_x64-setup.exe"
+2. Siguiente → Siguiente → Instalar.
+3. Listo. Se crea un acceso directo "Wiener XS 20" en el escritorio
+   y en el menú Inicio.
+
+Requisitos: Windows 10 u 11 (64 bits). Windows 11 ya trae todo lo
+necesario. En Windows 10, si la ventana se ve en blanco, instalar el
+"WebView2 Runtime" de Microsoft (gratis).
+
+
+Usar
+----
+- Abrí "Wiener XS 20". La app arranca sola el servicio que recibe los
+  datos del analizador y los muestra en pantalla.
+- En el analizador XS 20, configurá el envío HL7/LIS apuntando a:
+      IP:     la IP de ESTA computadora en la red del laboratorio
+      Puerto: 5100
+- Si necesitás cambiar la IP o el puerto de escucha, hacelo desde la
+  misma app: pestaña "Estado" → "Configuración". El cambio se aplica
+  al instante, sin reiniciar nada.
+
+
+Dónde quedan los datos
+----------------------
+Todo se guarda localmente en esta PC, en:
+    C:\ProgramData\WienerXS20\
+        db\        → base de datos con los resultados
+        logs\      → registro de actividad
+        config\    → configuración y token de la app
+
+Los resultados NO se borran nunca; se pueden buscar por muestra,
+paciente o ID desde la app.
+
+
+Desinstalar
+-----------
+Panel de Control → Programas → "Wiener XS 20" → Desinstalar.
+(Los datos en C:\ProgramData\WienerXS20\ se conservan; borralos a mano
+si querés eliminar todo.)
+
+----------------------------------------------------------------
+Craftly · versión 0.1.0
