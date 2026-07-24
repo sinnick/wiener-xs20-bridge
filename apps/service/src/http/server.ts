@@ -32,6 +32,17 @@ import type { TcpServer } from "../listener/tcp-server.js";
 import type { ResolvedConfig } from "../config.js";
 import { saveSettings } from "../settings-store.js";
 
+/**
+ * Headers CORS: la UI Tauri corre en origen https://tauri.localhost y hace
+ * fetch cross-origin a este servidor (http://127.0.0.1:7700) con el header
+ * custom X-XS20-Token, lo que dispara un preflight OPTIONS.
+ */
+const CORS_HEADERS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "GET, OPTIONS",
+  "Access-Control-Allow-Headers": "X-XS20-Token, Content-Type",
+};
+
 export interface HttpServerOptions {
   repo: XsRepo;
   logger: Logger;
@@ -78,8 +89,11 @@ export class HttpServer {
 
     let res: Response;
     try {
-      // /api/health no requiere token
-      if (path === "/api/health" && req.method === "GET") {
+      // Preflight CORS: nunca lleva el token, se responde antes de cualquier
+      // chequeo de auth (asi lo exige el estandar).
+      if (req.method === "OPTIONS") {
+        res = new Response(null, { status: 204, headers: CORS_HEADERS });
+      } else if (path === "/api/health" && req.method === "GET") {
         res = this.health();
       } else if (path === "/api/logs/stream" && req.method === "GET") {
         // SSE acepta token via query param o header
@@ -394,6 +408,7 @@ export class HttpServer {
         "Content-Type": "text/event-stream; charset=utf-8",
         "Cache-Control": "no-cache",
         Connection: "keep-alive",
+        ...CORS_HEADERS,
       },
     });
   }
@@ -402,7 +417,10 @@ export class HttpServer {
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { "Content-Type": "application/json; charset=utf-8" },
+    headers: {
+      "Content-Type": "application/json; charset=utf-8",
+      ...CORS_HEADERS,
+    },
   });
 }
 

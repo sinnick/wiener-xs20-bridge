@@ -1,5 +1,32 @@
 # Compilar la app de escritorio en Windows (.exe / .msi)
 
+## Build automático (GitHub Actions)
+
+Cada push a `master` (y también manualmente via `workflow_dispatch`) dispara el
+workflow `.github/workflows/build-windows.yml` en un runner `windows-latest`.
+Ese workflow instala dependencias, corre typecheck y tests, compila el servicio
+a `xs20-service.exe`, lo copia junto a los recursos de Tauri, y genera el
+instalador con `cargo tauri build`. Al terminar quedan publicados dos artifacts:
+
+- `wiener-xs20-setup-nsis` — el instalador NSIS (`-setup.exe`)
+- `wiener-xs20-setup-msi` — el instalador MSI
+
+Para descargarlos localmente (necesitás el [GitHub CLI](https://cli.github.com/)):
+
+```bash
+gh run download <run-id> -n wiener-xs20-setup-nsis -D ./dist-windows
+```
+
+Podés ver el `<run-id>` con `gh run list --workflow=build-windows.yml`, o entrar
+a la pestaña "Actions" del repo en GitHub.
+
+Esta es la forma recomendada de generar el instalador — no necesitás tener
+Windows, Rust ni Visual C++ Build Tools instalados en tu máquina. La sección
+siguiente ("Compilar" en adelante) queda como método manual / fallback, por si
+necesitás compilar localmente en Windows (por ejemplo para debug).
+
+## Build manual (fallback)
+
 Esta guía es para generar el instalador Windows del Wiener XS 20 Bridge desde tu
 PC. Todo el código ya está listo; esto es solo el paso de compilación final, que
 sale limpio en Windows con Rust moderno (unos 5-10 min la primera vez).
