@@ -10,11 +10,12 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import type { ServiceConfig } from "@xs20/shared";
 
 import type { LogLevel } from "./logger.js";
+import { loadSettings } from "./settings-store.js";
 
 export interface ResolvedConfig extends ServiceConfig {
   /** Si true, el logger escribe tambien a stdout con colores. */
@@ -23,6 +24,8 @@ export interface ResolvedConfig extends ServiceConfig {
   noListen: boolean;
   /** Token compartido con la UI para autenticar la HTTP API. */
   apiToken: string;
+  /** Path del settings.json editable desde la UI (persistencia de cambios). */
+  settingsPath: string;
 }
 
 function defaultDataDir(): string {
@@ -54,6 +57,8 @@ function defaultConfig(): ResolvedConfig {
     // Token aleatorio por instalacion. Si no existe en disco, lo generamos
     // y persistimos en config\api-token.txt.
     apiToken: "",
+    // Se recomputa en resolveConfig segun el dataDir efectivo.
+    settingsPath: "",
   };
 }
 
@@ -118,8 +123,18 @@ export function resolveConfig(argv: string[]): ResolvedConfig {
     def.logDir = join(cli.dataDir, "logs");
   }
 
+  // El settings.json editable vive junto al token, en <dataDir>/config.
+  // dataDir = padre del padre de dbPath (…\WienerXS20\db\xs20.sqlite → …\WienerXS20).
+  const dataDir = dirname(dirname(def.dbPath));
+  const settingsPath = join(dataDir, "config", "settings.json");
+  const persisted = loadSettings(settingsPath);
+
+  // Precedencia (menor a mayor): defaults < settings.json < archivo --config <
+  // env < flags CLI. Los settings guardados desde la UI ganan a los defaults,
+  // pero un flag/env explicito siempre manda (util en dev y para overrides).
   return {
     ...def,
+    ...persisted,
     ...fileCfg,
     ...envCfg,
     ...(cli.tcpPort !== undefined ? { tcpPort: cli.tcpPort } : {}),
@@ -127,5 +142,6 @@ export function resolveConfig(argv: string[]): ResolvedConfig {
     ...(cli.logLevel ? { logLevel: cli.logLevel } : {}),
     console: cli.console,
     noListen: cli.noListen,
+    settingsPath,
   };
 }
