@@ -40,6 +40,18 @@ export const ACK_DEADLINE_MS = 4000;
 // cada ~3s cuando esta ocioso, asi que 60s de silencio total = conexion colgada.
 export const CONNECTION_IDLE_TIMEOUT_MS = 60_000;
 
+// ─── Reconexion en modo "connect" (nosotros salimos al equipo) ───────────────
+// Cuando el XS 20 es el servidor TCP, la PC del laboratorio tiene que mantener
+// la conexion viva. El equipo se apaga todas las noches y se reinicia, asi que
+// reconectar solo no es un caso de borde: es la operacion normal.
+//
+// Backoff exponencial entre reintentos, arrancando corto (el equipo puede estar
+// reiniciandose) y con techo de 30s para no inundar la red ni el log cuando el
+// equipo esta apagado durante horas.
+export const RECONNECT_INITIAL_DELAY_MS = 1_000;
+export const RECONNECT_MAX_DELAY_MS = 30_000;
+export const RECONNECT_BACKOFF_FACTOR = 2;
+
 // ─── Mapeo OBX-3 codigo → parametro canonico del hemograma ───────────────────
 // [CONFIRMADO-DOC] para los codigos LOINC (con guion, ej "6690-2").
 // [INFERIDO] para los codigos propietarios 99MRC (5 digitos, ej "10027"):

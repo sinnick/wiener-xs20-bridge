@@ -442,6 +442,33 @@ export class XsRepo {
     return row?.c ?? 0;
   }
 
+  /**
+   * Comprueba que la DB acepte escrituras, sin modificar datos.
+   *
+   * Existe por un fallo real en produccion: si el .sqlite (o sus sidecar -wal /
+   * -shm) quedan con un dueño distinto al del proceso — pasa si el servicio
+   * corrio una vez elevado y despues normal — SQLite falla cada INSERT con
+   * "attempt to write a readonly database". El servicio arrancaba igual,
+   * mostraba "0 resultados" y respondia AE a cada mensaje del analizador, sin
+   * ninguna señal evidente de la causa.
+   *
+   * `BEGIN IMMEDIATE` pide el lock de escritura sin escribir nada: si la DB es
+   * de solo lectura, tira ahi mismo. El ROLLBACK deja todo como estaba.
+   */
+  probeWritable(): { ok: true } | { ok: false; error: string } {
+    try {
+      this.db.exec("BEGIN IMMEDIATE");
+      try {
+        this.db.exec("ROLLBACK");
+      } catch {
+        // ignore: lo importante era conseguir el lock
+      }
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: (e as Error).message };
+    }
+  }
+
   // ─── Retencion / purga ─────────────────────────────────────────────────────
 
   /**

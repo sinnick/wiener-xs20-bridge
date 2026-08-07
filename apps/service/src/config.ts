@@ -10,11 +10,12 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
-import type { ServiceConfig } from "@xs20/shared";
+import type { ConnectionMode, ServiceConfig } from "@xs20/shared";
 
 import type { LogLevel } from "./logger.js";
+import { loadSettings } from "./settings-store.js";
 
 export interface ResolvedConfig extends ServiceConfig {
   /** Si true, el logger escribe tambien a stdout con colores. */
@@ -23,6 +24,8 @@ export interface ResolvedConfig extends ServiceConfig {
   noListen: boolean;
   /** Token compartido con la UI para autenticar la HTTP API. */
   apiToken: string;
+  /** Path del settings.json editable desde la UI (persistencia de cambios). */
+  settingsPath: string;
 }
 
 function defaultDataDir(): string {
@@ -42,6 +45,12 @@ function defaultDataDir(): string {
 function defaultConfig(): ResolvedConfig {
   const dataDir = defaultDataDir();
   return {
+    // Default "listen": el equipo disca hacia nosotros. Si el XS 20 esta
+    // configurado como servidor (el caso verificado en campo), se cambia a
+    // "connect" desde la app o con --mode=connect.
+    connectionMode: "listen",
+    analyzerHost: "",
+    analyzerPort: 5100,
     tcpPort: 5100,
     tcpHost: "0.0.0.0",
     httpPort: 7700,
@@ -54,6 +63,8 @@ function defaultConfig(): ResolvedConfig {
     // Token aleatorio por instalacion. Si no existe en disco, lo generamos
     // y persistimos en config\api-token.txt.
     apiToken: "",
+    // Se recomputa en resolveConfig segun el dataDir efectivo.
+    settingsPath: "",
   };
 }
 
@@ -65,6 +76,9 @@ interface CliArgs {
   tcpPort?: number;
   httpPort?: number;
   dataDir?: string;
+  connectionMode?: ConnectionMode;
+  analyzerHost?: string;
+  analyzerPort?: number;
 }
 
 function parseCli(argv: string[]): CliArgs {
@@ -79,6 +93,14 @@ function parseCli(argv: string[]): CliArgs {
     else if (arg.startsWith("--port=")) out.tcpPort = parseInt(arg.split("=")[1] ?? "", 10);
     else if (arg.startsWith("--http-port=")) out.httpPort = parseInt(arg.split("=")[1] ?? "", 10);
     else if (arg.startsWith("--data-dir=")) out.dataDir = arg.split("=")[1];
+    else if (arg.startsWith("--mode=")) {
+      const v = arg.split("=")[1];
+      if (v === "listen" || v === "connect") out.connectionMode = v;
+    } else if (arg.startsWith("--analyzer-host=")) {
+      out.analyzerHost = arg.split("=")[1];
+    } else if (arg.startsWith("--analyzer-port=")) {
+      out.analyzerPort = parseInt(arg.split("=")[1] ?? "", 10);
+    }
   }
   return out;
 }
@@ -97,6 +119,13 @@ function loadEnv(): Partial<ServiceConfig> {
   if (process.env.XS20_TCP_PORT) out.tcpPort = parseInt(process.env.XS20_TCP_PORT, 10);
   if (process.env.XS20_TCP_HOST) out.tcpHost = process.env.XS20_TCP_HOST;
   if (process.env.XS20_HTTP_PORT) out.httpPort = parseInt(process.env.XS20_HTTP_PORT, 10);
+  if (process.env.XS20_MODE === "listen" || process.env.XS20_MODE === "connect") {
+    out.connectionMode = process.env.XS20_MODE;
+  }
+  if (process.env.XS20_ANALYZER_HOST) out.analyzerHost = process.env.XS20_ANALYZER_HOST;
+  if (process.env.XS20_ANALYZER_PORT) {
+    out.analyzerPort = parseInt(process.env.XS20_ANALYZER_PORT, 10);
+  }
   if (process.env.XS20_DB_PATH) out.dbPath = process.env.XS20_DB_PATH;
   if (process.env.XS20_LOG_DIR) out.logDir = process.env.XS20_LOG_DIR;
   if (process.env.XS20_LOG_LEVEL) {
@@ -118,14 +147,28 @@ export function resolveConfig(argv: string[]): ResolvedConfig {
     def.logDir = join(cli.dataDir, "logs");
   }
 
+  // El settings.json editable vive junto al token, en <dataDir>/config.
+  // dataDir = padre del padre de dbPath (…\WienerXS20\db\xs20.sqlite → …\WienerXS20).
+  const dataDir = dirname(dirname(def.dbPath));
+  const settingsPath = join(dataDir, "config", "settings.json");
+  const persisted = loadSettings(settingsPath);
+
+  // Precedencia (menor a mayor): defaults < settings.json < archivo --config <
+  // env < flags CLI. Los settings guardados desde la UI ganan a los defaults,
+  // pero un flag/env explicito siempre manda (util en dev y para overrides).
   return {
     ...def,
+    ...persisted,
     ...fileCfg,
     ...envCfg,
     ...(cli.tcpPort !== undefined ? { tcpPort: cli.tcpPort } : {}),
     ...(cli.httpPort !== undefined ? { httpPort: cli.httpPort } : {}),
     ...(cli.logLevel ? { logLevel: cli.logLevel } : {}),
+    ...(cli.connectionMode ? { connectionMode: cli.connectionMode } : {}),
+    ...(cli.analyzerHost !== undefined ? { analyzerHost: cli.analyzerHost } : {}),
+    ...(cli.analyzerPort !== undefined ? { analyzerPort: cli.analyzerPort } : {}),
     console: cli.console,
     noListen: cli.noListen,
+    settingsPath,
   };
 }

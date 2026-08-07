@@ -23,6 +23,44 @@ XS 20                           Servicio (nosotros)
   │                                    │
 ```
 
+## ¿Quién inicia la conexión TCP? — los dos modos
+
+**Esto es lo primero que hay que verificar contra el equipo real.** El diagrama
+de arriba asume que el XS 20 es el **cliente** TCP, pero el equipo también se
+puede configurar al revés, y de fábrica suele venir así:
+
+| Modo | Quién escucha | Quién disca | Config del servicio |
+|------|---------------|-------------|---------------------|
+| `listen` | el servicio, en `tcpHost:tcpPort` | el XS 20 | `connectionMode: "listen"` |
+| `connect` | el XS 20, en su propia IP:5100 | el servicio | `connectionMode: "connect"` + `analyzerHost`/`analyzerPort` |
+
+En los dos modos, una vez que hay socket el tratamiento de los bytes es idéntico
+(MLLP → parseo → persistencia → ACK): lo hace `hl7/message-processor.ts`, que
+comparten `listener/tcp-server.ts` (modo listen) y `listener/analyzer-client.ts`
+(modo connect).
+
+**[CONFIRMADO-CAMPO]** En la instalación de Wiener XS 20 verificada, el equipo
+está en **modo servidor**: escucha en `<ip-del-equipo>:5100` y hay que discarle.
+Se comprobó con un cliente TCP crudo, que estableció conexión contra el puerto
+5100 del analizador. Por eso el servicio se configura en `connectionMode:
+"connect"`.
+
+Cómo saber en qué modo está tu equipo, sin abrir su menú: desde la PC del
+laboratorio, con el analizador prendido, probá conectarte a él:
+
+```powershell
+Test-NetConnection -ComputerName <ip-del-equipo> -Port 5100
+```
+
+- Conecta → el equipo escucha → usá modo **`connect`**.
+- No conecta pero los resultados igual aparecen → el equipo disca → modo **`listen`**.
+
+En modo `connect` el servicio reconecta solo, con backoff exponencial (1s → 30s),
+así que el apagado nocturno del equipo y sus reinicios no requieren intervención:
+apenas el analizador vuelve a estar en red, la conexión se restablece. El estado
+(`conectado` / `esperando al equipo` + último error) se ve en la pantalla
+**Estado** de la app y en `GET /api/health` → `analyzerClient`.
+
 ## MLLP (Minimal Lower Layer Protocol)
 
 Cada mensaje HL7 va envuelto entre tres bytes de control:

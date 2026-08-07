@@ -1,11 +1,20 @@
 /**
- * Estado del servicio: health, conexion TCP, DB, configuracion.
+ * Estado del servicio: health, conexion TCP, DB, y configuracion editable.
  */
 
 import { useEffect, useState } from "react";
-import { Activity, Database, Radio, Settings } from "lucide-react";
+import { Activity, Database, Radio, Settings, Check, AlertCircle } from "lucide-react";
 
-import { getHealth, type HealthResponse } from "../lib/api";
+import {
+  getHealth,
+  getConfig,
+  updateConfig,
+  apiErrorMessage,
+  type ConnectionMode,
+  type HealthResponse,
+  type ServiceConfig,
+  type UpdateConfigRequest,
+} from "../lib/api";
 import { Dot } from "../components/primitives";
 
 export function StatusView() {
@@ -17,7 +26,7 @@ export function StatusView() {
     const poll = () => {
       getHealth()
         .then((h) => active && setHealth(h))
-        .catch((e) => active && setError(e.message));
+        .catch((e) => active && setError(apiErrorMessage(e)));
     };
     poll();
     const timer = setInterval(poll, 3000);
@@ -59,24 +68,75 @@ export function StatusView() {
               </Row>
             </Card>
 
-            {/* Conexion TCP */}
+            {/* Conexion con el equipo */}
             <Card icon={<Radio className="h-5 w-5" strokeWidth={1.5} />} title="Conexión con el analizador">
-              <Row label="Escuchando">
-                <span className="inline-flex items-center gap-2">
-                  <Dot className={health.tcpListener.listening ? "bg-normal-text" : "bg-high-text"} />
-                  {health.tcpListener.listening ? "Sí" : "No"}
+              <Row label="Modo">
+                <span className="text-sm">
+                  {health.connectionMode === "connect"
+                    ? "Nos conectamos al equipo"
+                    : "El equipo se conecta a nosotros"}
                 </span>
               </Row>
-              <Row label="Dirección">
+
+              {health.analyzerClient ? (
+                <>
+                  <Row label="Estado">
+                    <span className="inline-flex items-center gap-2">
+                      <Dot
+                        className={
+                          health.analyzerClient.connected ? "bg-normal-text" : "bg-high-text"
+                        }
+                      />
+                      {health.analyzerClient.connected
+                        ? "Conectado al equipo"
+                        : "Esperando al equipo"}
+                    </span>
+                  </Row>
+                  <Row label="Equipo">
+                    <span className="font-mono tnum">
+                      {health.analyzerClient.address}:{health.analyzerClient.port}
+                    </span>
+                  </Row>
+                  {!health.analyzerClient.connected && health.analyzerClient.lastError && (
+                    <Row label="Último error">
+                      <span className="text-sm text-high-text">
+                        {health.analyzerClient.lastError}
+                      </span>
+                    </Row>
+                  )}
+                  {health.analyzerClient.connectedAt && (
+                    <Row label="Conectado desde">
+                      <span className="font-mono text-sm tnum">
+                        {new Date(health.analyzerClient.connectedAt).toLocaleString("es-AR")}
+                      </span>
+                    </Row>
+                  )}
+                </>
+              ) : (
+                <>
+                  <Row label="Escuchando">
+                    <span className="inline-flex items-center gap-2">
+                      <Dot
+                        className={health.tcpListener.listening ? "bg-normal-text" : "bg-high-text"}
+                      />
+                      {health.tcpListener.listening ? "Sí" : "No"}
+                    </span>
+                  </Row>
+                  <Row label="Dirección">
+                    <span className="font-mono tnum">
+                      {health.tcpListener.address}:{health.tcpListener.port}
+                    </span>
+                  </Row>
+                  <Row label="Conexiones activas">
+                    <span className="font-mono tnum">{health.tcpListener.activeConnections}</span>
+                  </Row>
+                </>
+              )}
+
+              <Row label="Reconexiones">
                 <span className="font-mono tnum">
-                  {health.tcpListener.address}:{health.tcpListener.port}
+                  {health.tcpListener.totalConnectionsSinceStart}
                 </span>
-              </Row>
-              <Row label="Conexiones activas">
-                <span className="font-mono tnum">{health.tcpListener.activeConnections}</span>
-              </Row>
-              <Row label="Total desde el inicio">
-                <span className="font-mono tnum">{health.tcpListener.totalConnectionsSinceStart}</span>
               </Row>
               <Row label="Último mensaje">
                 <span className="font-mono text-sm tnum">
@@ -92,9 +152,17 @@ export function StatusView() {
               <Row label="Estado">
                 <span className="inline-flex items-center gap-2">
                   <Dot className={health.database.ok ? "bg-normal-text" : "bg-high-text"} />
-                  {health.database.ok ? "OK" : "Error"}
+                  {health.database.ok ? "OK" : "No se puede escribir"}
                 </span>
               </Row>
+              {!health.database.ok && (
+                <p className="rounded-sm border border-high-text/20 bg-high-bg/40 px-3 py-2 text-xs text-high-text">
+                  La base rechaza escrituras: <strong>los resultados que llegue a
+                  mandar el analizador no se van a guardar.</strong> Cerrá la app y
+                  volvé a abrirla; si sigue igual, revisá los permisos de la carpeta{" "}
+                  <span className="font-mono">C:\ProgramData\WienerXS20\db</span>.
+                </p>
+              )}
               <Row label="Resultados guardados">
                 <span className="font-mono tnum">{health.database.resultCount}</span>
               </Row>
@@ -103,18 +171,263 @@ export function StatusView() {
               </Row>
             </Card>
 
-            {/* Ayuda / config */}
-            <Card icon={<Settings className="h-5 w-5" strokeWidth={1.5} />} title="Configuración">
-              <p className="text-sm text-text-muted">
-                Para cambiar puertos, retención de datos o el nivel de logs, editá el
-                archivo de configuración del servicio y reinicialo. Los cambios de puerto
-                requieren reinicio.
-              </p>
-            </Card>
+            {/* Configuracion editable */}
+            <div className="md:col-span-2">
+              <ConfigCard />
+            </div>
           </div>
         )}
       </div>
     </div>
+  );
+}
+
+// ─── Card de configuracion editable ───────────────────────────────────────────
+
+function ConfigCard() {
+  const [cfg, setCfg] = useState<ServiceConfig | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+
+  const [mode, setMode] = useState<ConnectionMode>("listen");
+  const [analyzerHost, setAnalyzerHost] = useState("");
+  const [analyzerPort, setAnalyzerPort] = useState("");
+  const [tcpHost, setTcpHost] = useState("");
+  const [tcpPort, setTcpPort] = useState("");
+  const [logLevel, setLogLevel] = useState<ServiceConfig["logLevel"]>("info");
+  const [retention, setRetention] = useState("");
+
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+
+  const applyConfig = (c: ServiceConfig) => {
+    setCfg(c);
+    setMode(c.connectionMode);
+    setAnalyzerHost(c.analyzerHost);
+    setAnalyzerPort(String(c.analyzerPort));
+    setTcpHost(c.tcpHost);
+    setTcpPort(String(c.tcpPort));
+    setLogLevel(c.logLevel);
+    setRetention(String(c.rawRetentionDays));
+  };
+
+  useEffect(() => {
+    getConfig()
+      .then(applyConfig)
+      .catch((e) => setLoadError(apiErrorMessage(e)));
+  }, []);
+
+  const dirty =
+    cfg !== null &&
+    (mode !== cfg.connectionMode ||
+      analyzerHost !== cfg.analyzerHost ||
+      analyzerPort !== String(cfg.analyzerPort) ||
+      tcpHost !== cfg.tcpHost ||
+      tcpPort !== String(cfg.tcpPort) ||
+      logLevel !== cfg.logLevel ||
+      retention !== String(cfg.rawRetentionDays));
+
+  const onSave = async () => {
+    setSaving(true);
+    setSaveError(null);
+    setSaved(false);
+    try {
+      const patch: UpdateConfigRequest = {
+        connectionMode: mode,
+        analyzerHost: analyzerHost.trim(),
+        analyzerPort: Number(analyzerPort),
+        tcpHost: tcpHost.trim(),
+        tcpPort: Number(tcpPort),
+        logLevel,
+        rawRetentionDays: Number(retention),
+      };
+      const res = await updateConfig(patch);
+      applyConfig(res.config);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2500);
+    } catch (e) {
+      setSaveError(apiErrorMessage(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="rounded-lg border border-border bg-surface p-5">
+      <div className="mb-1 flex items-center gap-2 text-text-strong">
+        <span className="text-text-muted">
+          <Settings className="h-5 w-5" strokeWidth={1.5} />
+        </span>
+        <h2 className="font-medium">Configuración</h2>
+      </div>
+      <p className="mb-4 text-sm text-text-muted">
+        Los cambios se aplican al instante, sin reiniciar el servicio.
+      </p>
+
+      {loadError && (
+        <div className="mb-4 rounded-sm border border-high-text/20 bg-high-bg/40 px-3 py-2 text-sm text-high-text">
+          No se pudo leer la configuración: {loadError}
+        </div>
+      )}
+
+      {cfg && (
+        <>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div className="sm:col-span-2">
+              <Field
+                label="¿Quién inicia la conexión?"
+                hint="Tiene que coincidir con la configuración de LIS del analizador. Si no estás seguro, probá 'Nos conectamos al equipo' y mirá el estado arriba."
+              >
+                <select
+                  value={mode}
+                  onChange={(e) => setMode(e.target.value as ConnectionMode)}
+                  className={inputClass}
+                >
+                  <option value="connect">
+                    Nos conectamos al equipo (el equipo escucha)
+                  </option>
+                  <option value="listen">
+                    El equipo se conecta a nosotros (nosotros escuchamos)
+                  </option>
+                </select>
+              </Field>
+            </div>
+
+            {mode === "connect" ? (
+              <>
+                <Field
+                  label="IP del analizador"
+                  hint="La dirección del XS 20 en la red del laboratorio."
+                >
+                  <input
+                    type="text"
+                    value={analyzerHost}
+                    spellCheck={false}
+                    onChange={(e) => setAnalyzerHost(e.target.value)}
+                    placeholder="192.168.100.15"
+                    className={inputClass}
+                  />
+                </Field>
+
+                <Field label="Puerto del analizador" hint="En el XS 20 suele ser 5100.">
+                  <input
+                    type="number"
+                    min={1}
+                    max={65535}
+                    value={analyzerPort}
+                    onChange={(e) => setAnalyzerPort(e.target.value)}
+                    placeholder="5100"
+                    className={inputClass}
+                  />
+                </Field>
+              </>
+            ) : (
+              <>
+                <Field
+                  label="IP a escuchar"
+                  hint="Interfaz donde el analizador se conecta. 0.0.0.0 = todas."
+                >
+                  <input
+                    type="text"
+                    value={tcpHost}
+                    spellCheck={false}
+                    onChange={(e) => setTcpHost(e.target.value)}
+                    placeholder="0.0.0.0"
+                    className={inputClass}
+                  />
+                </Field>
+
+                <Field label="Puerto TCP" hint="Puerto donde escucha al XS 20.">
+                  <input
+                    type="number"
+                    min={1}
+                    max={65535}
+                    value={tcpPort}
+                    onChange={(e) => setTcpPort(e.target.value)}
+                    placeholder="5100"
+                    className={inputClass}
+                  />
+                </Field>
+              </>
+            )}
+
+            <Field label="Nivel de log">
+              <select
+                value={logLevel}
+                onChange={(e) => setLogLevel(e.target.value as ServiceConfig["logLevel"])}
+                className={inputClass}
+              >
+                <option value="debug">debug</option>
+                <option value="info">info</option>
+                <option value="warn">warn</option>
+                <option value="error">error</option>
+              </select>
+            </Field>
+
+            <Field label="Retención de HL7 crudo (días)" hint="0 = no purgar nunca.">
+              <input
+                type="number"
+                min={0}
+                max={3650}
+                value={retention}
+                onChange={(e) => setRetention(e.target.value)}
+                placeholder="90"
+                className={inputClass}
+              />
+            </Field>
+          </div>
+
+          <p className="mt-3 text-xs text-text-muted">
+            La API local usa el puerto{" "}
+            <span className="font-mono">{cfg.httpPort}</span> (no editable desde acá).
+          </p>
+
+          <div className="mt-5 flex items-center gap-3">
+            <button
+              onClick={onSave}
+              disabled={!dirty || saving}
+              className="rounded-sm bg-accent px-4 py-2 text-sm font-medium text-surface hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              {saving ? "Guardando…" : "Guardar cambios"}
+            </button>
+
+            {saved && (
+              <span className="inline-flex items-center gap-1.5 text-sm text-normal-text">
+                <Check className="h-4 w-4" strokeWidth={2} />
+                Guardado
+              </span>
+            )}
+            {saveError && (
+              <span className="inline-flex items-center gap-1.5 text-sm text-high-text">
+                <AlertCircle className="h-4 w-4" strokeWidth={2} />
+                {saveError}
+              </span>
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+const inputClass =
+  "w-full rounded-sm border border-border bg-surface px-3 py-2 text-sm text-text placeholder:text-text-muted focus:border-accent focus:outline-none";
+
+function Field({
+  label,
+  hint,
+  children,
+}: {
+  label: string;
+  hint?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <label className="block">
+      <span className="mb-1.5 block text-sm font-medium text-text-strong">{label}</span>
+      {children}
+      {hint && <span className="mt-1 block text-xs text-text-muted">{hint}</span>}
+    </label>
   );
 }
 

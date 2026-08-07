@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { openDb } from "../db/migrate.js";
 import { XsRepo } from "../db/repo.js";
@@ -40,6 +42,9 @@ describe("HttpServer - CORS", () => {
     });
 
     const config: ResolvedConfig = {
+      connectionMode: "listen",
+      analyzerHost: "",
+      analyzerPort: 5100,
       tcpPort: port + 1,
       tcpHost: "127.0.0.1",
       httpPort: port,
@@ -50,6 +55,7 @@ describe("HttpServer - CORS", () => {
       console: false,
       noListen: false,
       apiToken: API_TOKEN,
+      settingsPath: join(tmpdir(), `xs20-test-settings-${port}.json`),
     };
 
     httpServer = new HttpServer({

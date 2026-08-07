@@ -1,0 +1,72 @@
+================================================================
+  Wiener XS 20 Bridge — Instalación
+================================================================
+
+Qué es
+------
+Aplicación para recibir, guardar y ver los resultados de hemograma
+del analizador Wiener Lab Counter XS 20 en esta PC.
+
+El instalador ya trae TODO adentro (la app + el servicio que escucha
+al analizador). No hace falta instalar nada más.
+
+
+Instalar (1 minuto)
+-------------------
+1. Doble clic en:  "Wiener XS 20_0.1.0_x64-setup.exe"
+2. Siguiente → Siguiente → Instalar.
+3. Listo. Se crea un acceso directo "Wiener XS 20" en el escritorio
+   y en el menú Inicio.
+
+Requisitos: Windows 10 u 11 (64 bits). Windows 11 ya trae todo lo
+necesario. En Windows 10, si la ventana se ve en blanco, instalar el
+"WebView2 Runtime" de Microsoft (gratis).
+
+
+Usar
+----
+- Abrí "Wiener XS 20". La app arranca sola el servicio que recibe los
+  datos del analizador y los muestra en pantalla.
+
+- Conexión con el equipo. Hay dos formas y se elige en la app, en
+  pestaña "Estado" → "Configuración" → "¿Quién inicia la conexión?":
+
+    a) "Nos conectamos al equipo"  (es lo normal en el XS 20)
+       Poné la IP del analizador (ej 192.168.100.15) y puerto 5100.
+       La app se conecta sola y reconecta si el equipo se apaga o
+       se reinicia. No hay que configurar nada en el analizador.
+
+    b) "El equipo se conecta a nosotros"
+       En este caso, en el menú LIS/HL7 del analizador hay que
+       apuntar a la IP de ESTA computadora, puerto 5100.
+
+  Si no sabés en qué modo está tu equipo, dejá la opción (a): la
+  pantalla "Estado" muestra "Conectado al equipo" cuando enganchó.
+
+- Cualquier cambio se aplica al instante, sin reiniciar nada.
+
+- La pantalla "Estado" es el primer lugar donde mirar si algo no
+  funciona: dice si hay conexión con el analizador, cuándo entró el
+  último mensaje y si la base de datos está guardando bien.
+
+
+Dónde quedan los datos
+----------------------
+Todo se guarda localmente en esta PC, en:
+    C:\ProgramData\WienerXS20\
+        db\        → base de datos con los resultados
+        logs\      → registro de actividad
+        config\    → configuración y token de la app
+
+Los resultados NO se borran nunca; se pueden buscar por muestra,
+paciente o ID desde la app.
+
+
+Desinstalar
+-----------
+Panel de Control → Programas → "Wiener XS 20" → Desinstalar.
+(Los datos en C:\ProgramData\WienerXS20\ se conservan; borralos a mano
+si querés eliminar todo.)
+
+----------------------------------------------------------------
+Craftly · versión 0.1.0

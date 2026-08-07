@@ -122,7 +122,15 @@ export class Logger {
   }
 
   private computeLogPath(): string {
-    const date = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+    // Fecha LOCAL, no UTC: el archivo tiene que rotar a la medianoche del
+    // laboratorio. Con toISOString() (UTC) el corte caia a las 21:00 en
+    // Argentina, partiendo en dos el log de una misma jornada de trabajo.
+    const now = new Date();
+    const date = [
+      now.getFullYear(),
+      String(now.getMonth() + 1).padStart(2, "0"),
+      String(now.getDate()).padStart(2, "0"),
+    ].join("-");
     return join(this.cfg.logDir, `service-${date}.log`);
   }
 }

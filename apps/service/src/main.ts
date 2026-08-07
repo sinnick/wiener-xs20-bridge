@@ -12,7 +12,9 @@ import { randomBytes } from "node:crypto";
 import { resolveConfig } from "./config.js";
 import { openDb } from "./db/migrate.js";
 import { XsRepo } from "./db/repo.js";
+import { MessageProcessor } from "./hl7/message-processor.js";
 import { HttpServer } from "./http/server.js";
+import { AnalyzerClient } from "./listener/analyzer-client.js";
 import { TcpServer } from "./listener/tcp-server.js";
 import { Logger } from "./logger.js";
 
@@ -52,6 +54,9 @@ async function main(): Promise<void> {
     version: VERSION,
     pid: process.pid,
     platform: process.platform,
+    connectionMode: config.connectionMode,
+    analyzerHost: config.analyzerHost,
+    analyzerPort: config.analyzerPort,
     tcpPort: config.tcpPort,
     tcpHost: config.tcpHost,
     httpPort: config.httpPort,
@@ -64,6 +69,24 @@ async function main(): Promise<void> {
   const db = openDb({ path: config.dbPath });
   const repo = new XsRepo(db);
   logger.info("db.ready", { resultCount: repo.countResults() });
+
+  // Verificamos que la DB acepte escrituras ANTES de decir que arrancamos. Si no,
+  // el servicio queda vivo (la API y los logs sirven para diagnosticar) pero lo
+  // gritamos: sin esto, el sintoma es "el equipo manda y no se guarda nada".
+  const writable = repo.probeWritable();
+  if (!writable.ok) {
+    logger.error("db.not_writable", {
+      dbPath: config.dbPath,
+      error: writable.error,
+      detail:
+        "La base rechaza escrituras: NO se van a guardar resultados. Causa " +
+        "habitual en Windows: el .sqlite o sus archivos -wal/-shm quedaron de " +
+        "otro usuario (por haber corrido el servicio como administrador alguna " +
+        "vez). Solucion: cerrar la app y borrar " +
+        `${config.dbPath}-wal y ${config.dbPath}-shm, o darle permiso de ` +
+        "modificacion al usuario sobre la carpeta db.",
+    });
+  }
 
   // Retencion: purga el HL7 crudo viejo al arranque y despues cada 24h.
   // Los resultados estructurados NUNCA se borran; solo el payload pesado.
@@ -83,17 +106,40 @@ async function main(): Promise<void> {
   runPurge();
   const purgeTimer = setInterval(runPurge, 24 * 60 * 60 * 1000);
 
-  // TCP listener
+  // Procesamiento HL7 compartido por los dos transportes, para que el estado
+  // (lastMessageAt, contador de IDs) sea uno solo sin importar quien disco.
+  const processor = new MessageProcessor({ repo, logger });
+
+  // Los dos transportes se construyen siempre — asi la API puede cambiar de
+  // modo en caliente sin reiniciar — pero solo arranca el del modo activo.
   const tcp = new TcpServer({
     host: config.tcpHost,
     port: config.tcpPort,
     repo,
     logger,
+    processor,
   });
-  if (!config.noListen) {
-    tcp.start();
-  } else {
+  const analyzerClient = new AnalyzerClient({
+    host: config.analyzerHost,
+    port: config.analyzerPort,
+    processor,
+    logger,
+  });
+
+  if (config.noListen) {
     logger.warn("tcp.disabled", { reason: "--no-listen flag" });
+  } else if (config.connectionMode === "connect") {
+    if (config.analyzerHost.length === 0) {
+      logger.error("analyzer.client.no_host", {
+        detail:
+          "Modo 'connect' sin IP del analizador. Configurala en la app " +
+          "(Estado → Configuración) o arranca con --analyzer-host=<ip>.",
+      });
+    } else {
+      analyzerClient.start();
+    }
+  } else {
+    tcp.start();
   }
 
   // HTTP API
@@ -101,6 +147,7 @@ async function main(): Promise<void> {
     repo,
     logger,
     tcp,
+    analyzerClient,
     config,
     apiToken,
     port: config.httpPort,
@@ -128,6 +175,11 @@ async function main(): Promise<void> {
     }
     try {
       tcp.stop();
+    } catch {
+      /* ignore */
+    }
+    try {
+      analyzerClient.stop();
     } catch {
       /* ignore */
     }

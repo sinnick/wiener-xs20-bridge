@@ -112,4 +112,38 @@ describe("TcpServer (integracion)", () => {
     expect(ack).toContain("MSA|AA|999");
     expect(repo.countResults()).toBe(0);
   });
+
+  test("reconfigure mueve el listener a un puerto nuevo en caliente", async () => {
+    const newPort = 22000 + Math.floor(Math.random() * 2000);
+    server.reconfigure("127.0.0.1", newPort);
+
+    // El puerto nuevo acepta y procesa.
+    const ack = await sendAndAwaitAck(newPort, ORU_NORMAL);
+    expect(ack).toContain("MSA|AA|1001");
+    expect(repo.countResults()).toBe(1);
+
+    // getStatus refleja la direccion nueva.
+    expect(server.getStatus().port).toBe(newPort);
+    expect(server.getStatus().listening).toBe(true);
+  });
+
+  test("reconfigure a un puerto ocupado revierte y mantiene el listener previo", async () => {
+    const blockerPort = 24000 + Math.floor(Math.random() * 2000);
+    const blocker = Bun.listen<undefined>({
+      hostname: "127.0.0.1",
+      port: blockerPort,
+      socket: { data() {}, open() {}, close() {}, error() {} },
+    });
+
+    try {
+      expect(() => server.reconfigure("127.0.0.1", blockerPort)).toThrow();
+
+      // El listener previo sigue vivo y funcional tras el rollback.
+      expect(server.getStatus().port).toBe(port);
+      const ack = await sendAndAwaitAck(port, ORU_NORMAL);
+      expect(ack).toContain("MSA|AA|1001");
+    } finally {
+      blocker.stop(true);
+    }
+  });
 });

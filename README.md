@@ -33,6 +33,20 @@ Monorepo con dos procesos independientes que corren en la misma PC del laborator
 La UI (Tauri) usa el **WebView2** que Windows 11 ya trae, así que el instalador
 es liviano. El shell nativo lanza el servicio al abrir y lo cierra al salir.
 
+### Quién inicia la conexión TCP
+
+El XS 20 se puede configurar de las dos formas, y el servicio soporta ambas
+(`connectionMode`, editable desde la app en **Estado → Configuración**):
+
+| Modo | Quién escucha | Quién disca |
+|------|---------------|-------------|
+| `connect` | el XS 20 (en su IP, puerto 5100) | el servicio, y reconecta solo |
+| `listen` | el servicio (`0.0.0.0:5100`) | el XS 20 |
+
+**En el equipo verificado el modo correcto es `connect`**: el analizador actúa
+como servidor TCP. Ver [`docs/01-protocolo-hl7.md`](docs/01-protocolo-hl7.md)
+para cómo determinar en qué modo está tu equipo.
+
 ## Workspaces
 
 | Path | Propósito | Stack |
@@ -45,17 +59,21 @@ es liviano. El shell nativo lanza el servicio al abrir y lo cierra al salir.
 
 ## Estado
 
-- **Servicio**: ✅ completo. 74 tests verdes. Robustecido (retención de datos,
+- **Servicio**: ✅ completo. 90 tests verdes. Robustecido (retención de datos,
   idle timeout, protocolo aislado en `protocol-map.ts`). `.exe` de Windows probado
-  en Windows 11 real.
-- **Simulador**: ✅ completo. Genera mensajes HL7 realistas y variados en 4 modos
-  (single / batch / loop / fixture). Tu "equipo virtual" para desarrollar sin el
-  analizador físico.
+  en Windows 11 real. Habla los dos modos de conexión (`listen` y `connect`), con
+  reconexión automática y backoff en `connect`.
+- **Simulador**: ✅ completo. Genera mensajes HL7 realistas y variados en 5 modos
+  (single / batch / loop / fixture / serve). Tu "equipo virtual" para desarrollar
+  sin el analizador físico; `serve` hace de analizador para probar modo `connect`.
 - **UI**: ✅ completa. Cuatro pantallas (resultados, detalle, actividad, estado).
-  Typecheck limpio, buildea. Contrato con la API verificado.
-- **Tauri**: ✅ código completo y validado. El crate Rust compila y la app corre
-  (lanza el servicio, la API responde). Solo falta compilar el instalador Windows
-  en una máquina Windows — ver `docs/10-build-windows.md`.
+  Typecheck limpio, buildea. Contrato con la API verificado. La pantalla **Estado**
+  permite configurar IP/puerto de escucha, nivel de log y retención **desde la app**,
+  aplicados en caliente (sin reiniciar el servicio).
+- **Tauri**: ✅ corre en Windows 11 real. El crate Rust compila y la app abre la
+  ventana nativa, lanza el servicio, lee el token (`withGlobalTauri`) y la API
+  responde. Solo falta compilar el instalador `.msi/.nsis` — ver
+  `docs/10-build-windows.md`.
 
 ## Quickstart (desarrollo, sin equipo físico)
 
@@ -69,6 +87,12 @@ bun run dev:service
 bun run scripts/simulator/index.ts --mode=batch --count=30
 #   o en vivo, simulando un día de laboratorio:
 bun run scripts/simulator/index.ts --mode=loop --interval=4000
+
+# Para probar el modo "connect" (el simulador hace de equipo y escucha):
+bun run scripts/simulator/index.ts --mode=serve --port=5199 --count=5 --interval=500
+#   y el servicio saliendo a buscarlo:
+cd apps/service && bun run src/main.ts --console \
+  --mode=connect --analyzer-host=127.0.0.1 --analyzer-port=5199
 
 # Terminal 3: la UI (se abre en http://localhost:1420)
 bun run dev:ui

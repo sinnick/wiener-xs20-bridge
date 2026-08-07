@@ -51,10 +51,27 @@ export type GetResultResponse = HemogramResult & {
 
 // ─── Configuracion ───────────────────────────────────────────────────────────
 
+/**
+ * Quien inicia la conexion TCP con el analizador.
+ *
+ * - "listen"  → el servicio escucha en tcpHost:tcpPort y el XS 20 se conecta.
+ * - "connect" → el XS 20 escucha y el servicio se conecta a analyzerHost:analyzerPort.
+ *
+ * El XS 20 soporta las dos configuraciones desde su menu de LIS. Cual usar
+ * depende de como este configurado el equipo — ver docs/01-protocolo-hl7.md.
+ */
+export type ConnectionMode = "listen" | "connect";
+
 export interface ServiceConfig {
-  /** Puerto TCP donde escucha al XS 20. Default 5100. */
+  /** Quien disca. Default "listen". */
+  connectionMode: ConnectionMode;
+  /** IP del analizador. Solo se usa en modo "connect". */
+  analyzerHost: string;
+  /** Puerto donde escucha el analizador. Solo modo "connect". Default 5100. */
+  analyzerPort: number;
+  /** Puerto TCP donde escucha al XS 20. Solo modo "listen". Default 5100. */
   tcpPort: number;
-  /** Interfaz TCP (default "0.0.0.0"). */
+  /** Interfaz TCP (default "0.0.0.0"). Solo modo "listen". */
   tcpHost: string;
   /** Puerto HTTP local. Default 7700. */
   httpPort: number;
@@ -69,7 +86,16 @@ export interface ServiceConfig {
 }
 
 export type UpdateConfigRequest = Partial<
-  Pick<ServiceConfig, "tcpPort" | "tcpHost" | "logLevel" | "rawRetentionDays">
+  Pick<
+    ServiceConfig,
+    | "connectionMode"
+    | "analyzerHost"
+    | "analyzerPort"
+    | "tcpPort"
+    | "tcpHost"
+    | "logLevel"
+    | "rawRetentionDays"
+  >
 >;
 
 export interface UpdateConfigResponse {
@@ -83,7 +109,15 @@ export interface UpdateConfigResponse {
 export interface HealthResponse {
   status: "ok" | "degraded" | "down";
   uptime: number; // segundos
-  /** Estado del listener TCP. */
+  /** Modo de conexion activo. */
+  connectionMode: ConnectionMode;
+  /**
+   * Estado del transporte TCP.
+   *
+   * En modo "listen", `listening` = el listener esta arriba y `address:port` es
+   * donde escuchamos. En modo "connect", `listening` = el cliente esta activo y
+   * `address:port` es la direccion del analizador.
+   */
   tcpListener: {
     listening: boolean;
     address: string;
@@ -91,6 +125,23 @@ export interface HealthResponse {
     activeConnections: number;
     totalConnectionsSinceStart: number;
   };
+  /**
+   * Detalle del cliente saliente. Solo en modo "connect" (null en "listen").
+   * Es lo que la app usa para mostrar "conectado al equipo" vs "esperando al
+   * equipo (apagado?)" sin obligar al usuario a leer logs.
+   */
+  analyzerClient: {
+    /** El cliente esta corriendo (aunque todavia no haya conectado). */
+    active: boolean;
+    /** Hay socket establecido con el analizador ahora mismo. */
+    connected: boolean;
+    address: string;
+    port: number;
+    /** ISO del momento en que se establecio la conexion actual, o null. */
+    connectedAt: string | null;
+    /** Ultimo error de conexion (ej "ECONNREFUSED"), o null. */
+    lastError: string | null;
+  } | null;
   /** Estado de la DB. */
   database: {
     ok: boolean;

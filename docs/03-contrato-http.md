@@ -74,15 +74,52 @@ Devuelve la configuración actual del servicio (`ServiceConfig`).
 
 #### `PUT /api/config`
 
-Actualiza configuración. Body: `UpdateConfigRequest`. Respuesta: `UpdateConfigResponse` con flag `restartRequired`.
+Actualiza configuración. Body: `UpdateConfigRequest` (campos editables:
+`connectionMode`, `analyzerHost`, `analyzerPort`, `tcpHost`, `tcpPort`, `logLevel`,
+`rawRetentionDays` — todos opcionales, se aplica solo lo enviado).
+Respuesta: `UpdateConfigResponse` con la config resultante y el flag `restartRequired`.
 
-Cambios que requieren restart: `tcpPort`, `tcpHost`, `httpPort`. Cambios en caliente: `logLevel`, `rawRetentionDays`.
+**Todos los cambios se aplican en caliente, sin reiniciar el servicio** (`restartRequired`
+siempre `false`):
+
+- `connectionMode`: cambia quién inicia la conexión TCP (ver `docs/01-protocolo-hl7.md`).
+  Al pasar a `connect` se para el listener y arranca el cliente saliente; al pasar a
+  `listen`, al revés. Si el servicio arrancó sin cliente saliente, responde
+  `409 MODE_SWITCH_UNAVAILABLE`.
+- `analyzerHost` / `analyzerPort`: redirigen el cliente saliente en caliente
+  (`AnalyzerClient.reconfigure`). No falla si el equipo está apagado: entra en el ciclo
+  de reintentos y el estado queda visible en `/api/health`.
+- `tcpHost` / `tcpPort`: reinician solo el listener TCP (`TcpServer.reconfigure`). Las
+  conexiones abiertas del analizador se cierran y el equipo reconecta solo. Si el nuevo
+  host/puerto no se puede bindear (ocupado, IP no asignable), se revierte al anterior y
+  responde `409 TCP_BIND_FAILED`.
+- `logLevel`: cambia el nivel del logger al instante.
+- `rawRetentionDays`: se usa en la próxima corrida de purga.
+
+El `httpPort` **no** es editable por acá (la UI perdería la conexión con la API). Los
+valores válidos se persisten en `<dataDir>/config/settings.json` y se recargan al arrancar.
+
+Validaciones (todas devuelven `400 VALIDATION_ERROR` con mensaje): `connectionMode` en
+`listen|connect`; `analyzerHost` IPv4 válida y distinta de `0.0.0.0` (obligatoria si el
+modo resultante es `connect`); `analyzerPort` entero 1–65535; `tcpPort` entero 1–65535
+y distinto del `httpPort`; `tcpHost` IPv4 válida, `0.0.0.0` o `localhost`; `logLevel` en
+`debug|info|warn|error`; `rawRetentionDays` entero 0–3650.
 
 ### Health / status
 
 #### `GET /api/health`
 
-Devuelve `HealthResponse` con estado del listener TCP, DB, último mensaje recibido, etc. Sin auth — sirve para que el instalador / monitoreo confirmen que el servicio arrancó.
+Devuelve `HealthResponse` con estado del transporte TCP, DB, último mensaje recibido, etc. Sin auth — sirve para que el instalador / monitoreo confirmen que el servicio arrancó.
+
+`connectionMode` dice qué modo está activo. En modo `connect`, el campo `analyzerClient`
+trae el detalle de la conexión saliente (`connected`, `address:port`, `connectedAt`,
+`lastError`) y es `null` en modo `listen`. El `status` general es `ok` sólo si el transporte
+activo está sano: en modo `connect` eso significa **conectado al analizador**, así que con
+el equipo apagado el servicio reporta `degraded` (que es correcto: está vivo pero no puede
+recibir resultados).
+
+`tcpListener` se mantiene en los dos modos para no romper consumidores: en modo `connect`,
+`listening` indica que el cliente está activo y `address:port` es la dirección del equipo.
 
 ### Logs en vivo (SSE)
 

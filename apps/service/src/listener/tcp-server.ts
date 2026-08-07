@@ -1,7 +1,7 @@
 /**
  * TCP listener: recibe conexiones del XS 20, parsea HL7, persiste, ACK.
  *
- * Diseño:
+ * DiseÃ±o:
  *  - Una conexion del XS 20 puede vivir varios minutos/horas (heartbeats).
  *  - Por cada conexion mantenemos un buffer de bytes acumulados.
  *  - Cuando llega data, intentamos `unframeMllp` y procesamos los mensajes
@@ -10,22 +10,16 @@
  *
  * Manejo de bytes de control (ENQ/heartbeat):
  *  - Por ahora los logueamos a debug. El XS 20 los emite como handshake/ping
- *    pero no requieren respuesta especifica para MLLP/HL7 — el ACK^R01 es
+ *    pero no requieren respuesta especifica para MLLP/HL7 â€” el ACK^R01 es
  *    suficiente para que el equipo confirme que el LIS esta vivo.
  */
 
 import type { Socket, TCPSocketListener } from "bun";
 
-import { Hl7ParseError } from "../hl7/parser.js";
-import { buildAck } from "../hl7/ack.js";
-import { frameMllp, unframeMllp } from "../hl7/mllp.js";
+import { MessageProcessor, MllpBuffer } from "../hl7/message-processor.js";
 import { CONNECTION_IDLE_TIMEOUT_MS } from "../hl7/protocol-map.js";
-import { parseHl7 } from "../hl7/parser.js";
-import { mapMessageToHemogram } from "../hl7/obx-mapper.js";
-import { getString, getSegment } from "../hl7/parser.js";
 import type { Logger } from "../logger.js";
 import type { XsRepo } from "../db/repo.js";
-import { InsertResultDuplicateError } from "../db/repo.js";
 
 export interface TcpServerOptions {
   host: string;
@@ -36,10 +30,16 @@ export interface TcpServerOptions {
   generateId?: () => string;
   /** Callback cuando se recibe un resultado nuevo (para los SSE / metricas). */
   onResultReceived?: (id: string) => void;
+  /**
+   * Procesador compartido. Si no se pasa, se arma uno con repo/logger.
+   * main.ts pasa el mismo para los dos transportes (listener y cliente) de modo
+   * que `lastMessageAt` sea coherente sin importar por donde entro el mensaje.
+   */
+  processor?: MessageProcessor;
 }
 
 interface ConnectionState {
-  buffer: Uint8Array;
+  buffer: MllpBuffer;
   peer: string;
   connectedAt: Date;
   lastActivityAt: number; // epoch ms del ultimo byte recibido
@@ -50,12 +50,20 @@ interface ConnectionState {
 export class TcpServer {
   private listener: TCPSocketListener<ConnectionState> | null = null;
   private connections = new Set<Socket<ConnectionState>>();
-  private idCounter = 0;
   private totalConnections = 0;
-  private lastMessageAt: Date | null = null;
   private idleSweeper: ReturnType<typeof setInterval> | null = null;
+  private processor: MessageProcessor;
 
-  constructor(private opts: TcpServerOptions) {}
+  constructor(private opts: TcpServerOptions) {
+    this.processor =
+      opts.processor ??
+      new MessageProcessor({
+        repo: opts.repo,
+        logger: opts.logger,
+        generateId: opts.generateId,
+        onResultReceived: opts.onResultReceived,
+      });
+  }
 
   start(): void {
     this.listener = Bun.listen<ConnectionState>({
@@ -69,7 +77,7 @@ export class TcpServer {
       },
     });
     // Barrido periodico para cerrar conexiones colgadas (equipo que abrio el
-    // socket y dejo de mandar nada — red caida, equipo apagado a mitad, etc.).
+    // socket y dejo de mandar nada â€” red caida, equipo apagado a mitad, etc.).
     this.idleSweeper = setInterval(() => this.sweepIdleConnections(), 15_000);
     this.opts.logger.info("tcp.listener.up", {
       host: this.opts.host,
@@ -95,6 +103,43 @@ export class TcpServer {
     this.opts.logger.info("tcp.listener.down");
   }
 
+  /**
+   * Cambia host/puerto del listener en caliente, sin reiniciar el servicio.
+   * Cierra las conexiones actuales (el equipo reconecta solo) y vuelve a
+   * escuchar en la nueva direccion. Si el bind nuevo falla (puerto ocupado,
+   * IP invalida), revierte a la direccion anterior y relanza el error para
+   * que el HTTP handler devuelva 409.
+   */
+  reconfigure(host: string, port: number): void {
+    if (host === this.opts.host && port === this.opts.port && this.listener) {
+      return; // sin cambios
+    }
+
+    const prevHost = this.opts.host;
+    const prevPort = this.opts.port;
+    const wasListening = this.listener !== null;
+
+    if (wasListening) this.stop();
+    this.opts.host = host;
+    this.opts.port = port;
+
+    if (!wasListening) return; // estaba con --no-listen: solo guardamos los valores
+
+    try {
+      this.start();
+    } catch (e) {
+      // Rollback: volvemos a la direccion previa para no dejar el listener caido.
+      this.opts.host = prevHost;
+      this.opts.port = prevPort;
+      try {
+        this.start();
+      } catch {
+        // Si tambien falla lo previo, ya no hay listener; se refleja en health.
+      }
+      throw e;
+    }
+  }
+
   /** Cierra conexiones sin actividad por mas de CONNECTION_IDLE_TIMEOUT_MS. */
   private sweepIdleConnections(): void {
     const now = Date.now();
@@ -116,7 +161,7 @@ export class TcpServer {
     }
   }
 
-  // ─── Estado para el endpoint de health ──────────────────────────────────────
+  // â”€â”€â”€ Estado para el endpoint de health â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   getStatus() {
     return {
@@ -125,16 +170,16 @@ export class TcpServer {
       port: this.opts.port,
       activeConnections: this.connections.size,
       totalConnectionsSinceStart: this.totalConnections,
-      lastMessageAt: this.lastMessageAt,
+      lastMessageAt: this.processor.getLastMessageAt(),
     };
   }
 
-  // ─── Handlers de socket ─────────────────────────────────────────────────────
+  // â”€â”€â”€ Handlers de socket â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   private onOpen(socket: Socket<ConnectionState>): void {
     const peer = `${socket.remoteAddress}`;
     socket.data = {
-      buffer: new Uint8Array(0),
+      buffer: new MllpBuffer(),
       peer,
       connectedAt: new Date(),
       lastActivityAt: Date.now(),
@@ -169,149 +214,22 @@ export class TcpServer {
     state.bytesReceived += data.length;
     state.lastActivityAt = Date.now();
 
-    // Concatenar al buffer existente.
-    const combined = new Uint8Array(state.buffer.length + data.length);
-    combined.set(state.buffer, 0);
-    combined.set(new Uint8Array(data.buffer, data.byteOffset, data.byteLength), state.buffer.length);
-
-    const result = unframeMllp(combined);
-    state.buffer = result.remaining;
+    const bytes = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+    const { messages, controlBytes } = state.buffer.push(bytes);
 
     // Loguear bytes de control (sin actuar)
-    if (result.controlBytes.length > 0) {
+    if (controlBytes.length > 0) {
       this.opts.logger.debug("mllp.control_bytes", {
         peer: state.peer,
-        bytes: result.controlBytes.map((b) => "0x" + b.toString(16).padStart(2, "0")),
+        bytes: controlBytes.map((b) => "0x" + b.toString(16).padStart(2, "0")),
       });
     }
 
-    for (const hl7Text of result.messages) {
-      this.processMessage(socket, hl7Text);
+    for (const hl7Text of messages) {
+      this.processor.process(hl7Text, state.peer, (framed) => {
+        socket.write(framed);
+      });
       state.messagesProcessed++;
     }
-  }
-
-  private processMessage(socket: Socket<ConnectionState>, hl7Text: string): void {
-    const state = socket.data;
-    const receivedAt = new Date();
-    this.lastMessageAt = receivedAt;
-
-    this.opts.logger.debug("mllp.frame.received", {
-      peer: state.peer,
-      bytes: hl7Text.length,
-    });
-
-    // Intentar parsear
-    let messageControlId = "";
-    let ackStatus: "AA" | "AE" = "AA";
-    let ackError: string | undefined;
-
-    try {
-      const msg = parseHl7(hl7Text);
-      const msh = getSegment(msg, "MSH");
-      messageControlId = msh ? (getString(msh, 10) ?? "") : "";
-      const messageType = msh ? (getString(msh, 9, 1) ?? "?") : "?";
-
-      if (messageType !== "ORU") {
-        // Solo procesamos resultados. Para ACKs/otros, respondemos AA pero no persistimos.
-        this.opts.logger.info("hl7.non_oru_received", {
-          peer: state.peer,
-          messageType,
-          messageControlId,
-        });
-      } else {
-        const id = this.generateResultId();
-        const { hemogram, warnings } = mapMessageToHemogram(msg, { id, receivedAt });
-
-        for (const w of warnings) {
-          this.opts.logger.warn(`hl7.${w.type}`, {
-            peer: state.peer,
-            messageControlId,
-            ...w.context,
-            detail: w.message,
-          });
-        }
-
-        try {
-          this.opts.repo.insertResult({
-            hemogram,
-            rawHl7: hl7Text,
-            senderAddress: state.peer,
-          });
-          this.opts.logger.info("hl7.parsed", {
-            peer: state.peer,
-            sampleId: hemogram.sample.sampleId,
-            messageControlId,
-            valuesCount: Object.keys(hemogram.values).length,
-            histogramsCount: hemogram.histograms.length,
-          });
-          this.opts.onResultReceived?.(id);
-        } catch (e) {
-          if (e instanceof InsertResultDuplicateError) {
-            this.opts.logger.info("hl7.duplicate", {
-              peer: state.peer,
-              messageControlId,
-            });
-            // Respondemos AA igual: el equipo cumplio su parte, no necesita reintentar.
-          } else {
-            throw e;
-          }
-        }
-      }
-    } catch (e) {
-      ackStatus = "AE";
-      ackError = (e as Error).message;
-      this.opts.logger.error("hl7.parse_error", {
-        peer: state.peer,
-        error: ackError,
-        snippet: hl7Text.slice(0, 200),
-      });
-
-      // Persistimos el raw como failed para auditoria.
-      try {
-        const rawId = `raw_failed_${Date.now()}_${this.idCounter++}`;
-        this.opts.repo.insertFailedRaw({
-          rawMessageId: rawId,
-          rawHl7: hl7Text,
-          receivedAt,
-          messageControlId: messageControlId || `unknown_${rawId}`,
-          senderAddress: state.peer,
-          error: ackError,
-        });
-      } catch {
-        // ignore — si la DB falla aca, ya se logueo arriba
-      }
-    }
-
-    // Enviar ACK SIEMPRE. Aunque el parseo falle antes de poder extraer el
-    // MSH-10, el XS 20 espera una respuesta: si no la mandamos, su conexion
-    // queda colgada hasta su propio timeout (~4s) en CADA mensaje malformado.
-    // En ese caso usamos un control id vacio ("") — HL7 lo permite en el MSA
-    // cuando el original no pudo determinarse.
-    const ackControlIdRef = messageControlId || "";
-    const ackText = buildAck({
-      originalMessageControlId: ackControlIdRef,
-      status: ackStatus,
-      errorText: ackError,
-    });
-    const framed = frameMllp(ackText);
-    try {
-      socket.write(framed);
-      this.opts.logger.debug("ack.sent", {
-        peer: state.peer,
-        messageControlId: ackControlIdRef || "(desconocido)",
-        status: ackStatus,
-      });
-    } catch (e) {
-      this.opts.logger.error("ack.send_failed", {
-        peer: state.peer,
-        error: (e as Error).message,
-      });
-    }
-  }
-
-  private generateResultId(): string {
-    if (this.opts.generateId) return this.opts.generateId();
-    return `r_${Date.now()}_${(this.idCounter++).toString(36)}`;
   }
 }

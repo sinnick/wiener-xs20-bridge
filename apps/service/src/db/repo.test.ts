@@ -13,6 +13,37 @@ function makeRepo() {
 
 const T0 = new Date("2026-04-27T15:32:11Z");
 
+describe("XsRepo - probeWritable", () => {
+  test("una DB normal reporta que acepta escrituras", () => {
+    const repo = makeRepo();
+    expect(repo.probeWritable()).toEqual({ ok: true });
+  });
+
+  test("no deja transaccion abierta (se puede insertar despues)", () => {
+    const repo = makeRepo();
+    repo.probeWritable();
+    repo.probeWritable();
+
+    // Si el probe hubiera dejado un BEGIN colgado, este insert fallaria.
+    const msg = parseHl7(ORU_NORMAL);
+    const { hemogram } = mapMessageToHemogram(msg, { id: "probe_1", receivedAt: T0 });
+    repo.insertResult({ hemogram, rawHl7: ORU_NORMAL, senderAddress: "127.0.0.1" });
+    expect(repo.countResults()).toBe(1);
+  });
+
+  test("una DB de solo lectura se detecta como no escribible", () => {
+    // Es el fallo que vimos en produccion: la DB abre bien y se puede leer, pero
+    // cada escritura falla. El probe tiene que verlo sin necesidad de insertar.
+    const db = openDb({ path: ":memory:" });
+    const repo = new XsRepo(db);
+    db.exec("PRAGMA query_only = ON");
+
+    const res = repo.probeWritable();
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error.length).toBeGreaterThan(0);
+  });
+});
+
 describe("XsRepo - insertResult", () => {
   test("inserta un hemograma normal y lo recupera", () => {
     const repo = makeRepo();
