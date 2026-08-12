@@ -2,7 +2,7 @@ name: Build Windows installer
 
 on:
   push:
-    branches: [master]
+    branches: [main]
   workflow_dispatch: {}
 
 jobs:
