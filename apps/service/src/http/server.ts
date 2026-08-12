@@ -286,6 +286,7 @@ export class HttpServer {
       logDir: c.logDir,
       logLevel: c.logLevel,
       rawRetentionDays: c.rawRetentionDays,
+      exportDir: c.exportDir,
     };
   }
 
@@ -394,6 +395,16 @@ export class HttpServer {
       );
     }
 
+    // Vacio se acepta: deshabilita la exportacion a .txt.
+    let newExportDir = cfg.exportDir;
+    if (body.exportDir !== undefined) {
+      if (typeof body.exportDir !== "string") {
+        errors.push("La carpeta de exportación debe ser un texto (o vacío para deshabilitar)");
+      } else {
+        newExportDir = body.exportDir.trim();
+      }
+    }
+
     let newRetention = cfg.rawRetentionDays;
     if (body.rawRetentionDays !== undefined) {
       if (
@@ -496,6 +507,9 @@ export class HttpServer {
     // Retencion: se aplica en la proxima corrida de purga.
     cfg.rawRetentionDays = newRetention;
 
+    // Carpeta de exportacion: aplica en el proximo resultado recibido.
+    cfg.exportDir = newExportDir;
+
     // Persistir para que sobreviva a reinicios.
     try {
       saveSettings(cfg.settingsPath, {
@@ -506,6 +520,7 @@ export class HttpServer {
         tcpHost: cfg.tcpHost,
         logLevel: cfg.logLevel,
         rawRetentionDays: cfg.rawRetentionDays,
+        exportDir: cfg.exportDir,
       });
     } catch (e) {
       this.opts.logger.error("config.persist_failed", { error: (e as Error).message });
@@ -519,6 +534,7 @@ export class HttpServer {
       tcpPort: cfg.tcpPort,
       logLevel: cfg.logLevel,
       rawRetentionDays: cfg.rawRetentionDays,
+      exportDir: cfg.exportDir,
     });
 
     const resp: UpdateConfigResponse = {

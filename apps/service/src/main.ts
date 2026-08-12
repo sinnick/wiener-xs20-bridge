@@ -11,6 +11,7 @@ import { randomBytes } from "node:crypto";
 
 import { resolveConfig } from "./config.js";
 import { openDb } from "./db/migrate.js";
+import { TxtExporter } from "./export/txt-exporter.js";
 import { XsRepo } from "./db/repo.js";
 import { MessageProcessor } from "./hl7/message-processor.js";
 import { HttpServer } from "./http/server.js";
@@ -62,6 +63,7 @@ async function main(): Promise<void> {
     httpPort: config.httpPort,
     dbPath: config.dbPath,
     logDir: config.logDir,
+    exportDir: config.exportDir,
     noListen: config.noListen,
   });
 
@@ -106,9 +108,17 @@ async function main(): Promise<void> {
   runPurge();
   const purgeTimer = setInterval(runPurge, 24 * 60 * 60 * 1000);
 
+  // Exportacion a .txt por muestra. Lee exportDir del config vivo, asi el
+  // cambio de carpeta desde la app aplica sin reiniciar.
+  const txtExporter = new TxtExporter({ getDir: () => config.exportDir, logger });
+
   // Procesamiento HL7 compartido por los dos transportes, para que el estado
   // (lastMessageAt, contador de IDs) sea uno solo sin importar quien disco.
-  const processor = new MessageProcessor({ repo, logger });
+  const processor = new MessageProcessor({
+    repo,
+    logger,
+    onHemogramPersisted: (h) => txtExporter.export(h),
+  });
 
   // Los dos transportes se construyen siempre — asi la API puede cambiar de
   // modo en caliente sin reiniciar — pero solo arranca el del modo activo.

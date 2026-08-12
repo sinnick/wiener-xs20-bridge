@@ -11,6 +11,8 @@
  * compartan exactamente el mismo camino y no se desincronicen.
  */
 
+import type { HemogramResult } from "@xs20/shared";
+
 import { buildAck } from "./ack.js";
 import { frameMllp, unframeMllp } from "./mllp.js";
 import { mapMessageToHemogram } from "./obx-mapper.js";
@@ -53,6 +55,8 @@ export interface MessageProcessorOptions {
   generateId?: () => string;
   /** Callback cuando se persiste un resultado nuevo (para los SSE / metricas). */
   onResultReceived?: (id: string) => void;
+  /** Callback con el hemograma ya persistido (para la exportacion a .txt). */
+  onHemogramPersisted?: (hemogram: HemogramResult) => void;
 }
 
 /** Como el procesador le devuelve el ACK al transporte que lo llamo. */
@@ -126,6 +130,8 @@ export class MessageProcessor {
             histogramsCount: hemogram.histograms.length,
           });
           this.opts.onResultReceived?.(id);
+          // Solo tras un insert exitoso: un duplicado no debe re-exportar.
+          this.opts.onHemogramPersisted?.(hemogram);
         } catch (e) {
           if (e instanceof InsertResultDuplicateError) {
             this.opts.logger.info("hl7.duplicate", { peer, messageControlId });

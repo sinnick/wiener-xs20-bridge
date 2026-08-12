@@ -7,7 +7,8 @@
  * carga y los aplica sobre los defaults (ver config.ts).
  *
  * Solo persistimos el subconjunto que tiene sentido tocar sin reiniciar:
- * puerto/host del listener TCP, nivel de log y retencion del HL7 crudo.
+ * puerto/host del listener TCP, nivel de log, retencion del HL7 crudo y la
+ * carpeta de exportacion de .txt por muestra.
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -26,6 +27,7 @@ export type PersistedSettings = Partial<
     | "tcpHost"
     | "logLevel"
     | "rawRetentionDays"
+    | "exportDir"
   >
 >;
 
@@ -76,6 +78,10 @@ export function loadSettings(path: string): PersistedSettings {
       parsed.rawRetentionDays >= 0
     ) {
       out.rawRetentionDays = parsed.rawRetentionDays;
+    }
+    // "" es valido: significa exportacion deshabilitada, no debe caer al default.
+    if (typeof parsed.exportDir === "string") {
+      out.exportDir = parsed.exportDir;
     }
     return out;
   } catch {

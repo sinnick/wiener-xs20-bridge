@@ -83,6 +83,8 @@ export interface ServiceConfig {
   logLevel: "debug" | "info" | "warn" | "error";
   /** Cuantos dias retener mensajes raw HL7 (para auditoria). 0 = no purgar. */
   rawRetentionDays: number;
+  /** Carpeta donde escribir el .txt por muestra al recibir. "" = deshabilitado. */
+  exportDir: string;
 }
 
 export type UpdateConfigRequest = Partial<
@@ -95,6 +97,7 @@ export type UpdateConfigRequest = Partial<
     | "tcpHost"
     | "logLevel"
     | "rawRetentionDays"
+    | "exportDir"
   >
 >;
 

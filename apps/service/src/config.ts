@@ -58,6 +58,7 @@ function defaultConfig(): ResolvedConfig {
     logDir: join(dataDir, "logs"),
     logLevel: "info",
     rawRetentionDays: 90,
+    exportDir: join(dataDir, "exportes"),
     console: false,
     noListen: false,
     // Token aleatorio por instalacion. Si no existe en disco, lo generamos
@@ -128,6 +129,7 @@ function loadEnv(): Partial<ServiceConfig> {
   }
   if (process.env.XS20_DB_PATH) out.dbPath = process.env.XS20_DB_PATH;
   if (process.env.XS20_LOG_DIR) out.logDir = process.env.XS20_LOG_DIR;
+  if (process.env.XS20_EXPORT_DIR !== undefined) out.exportDir = process.env.XS20_EXPORT_DIR;
   if (process.env.XS20_LOG_LEVEL) {
     const lvl = process.env.XS20_LOG_LEVEL as LogLevel;
     if (["debug", "info", "warn", "error"].includes(lvl)) out.logLevel = lvl;
@@ -145,6 +147,7 @@ export function resolveConfig(argv: string[]): ResolvedConfig {
   if (cli.dataDir) {
     def.dbPath = join(cli.dataDir, "db", "xs20.sqlite");
     def.logDir = join(cli.dataDir, "logs");
+    def.exportDir = join(cli.dataDir, "exportes");
   }
 
   // El settings.json editable vive junto al token, en <dataDir>/config.

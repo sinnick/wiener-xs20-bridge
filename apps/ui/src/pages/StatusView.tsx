@@ -195,6 +195,7 @@ function ConfigCard() {
   const [tcpPort, setTcpPort] = useState("");
   const [logLevel, setLogLevel] = useState<ServiceConfig["logLevel"]>("info");
   const [retention, setRetention] = useState("");
+  const [exportDir, setExportDir] = useState("");
 
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -209,6 +210,7 @@ function ConfigCard() {
     setTcpPort(String(c.tcpPort));
     setLogLevel(c.logLevel);
     setRetention(String(c.rawRetentionDays));
+    setExportDir(c.exportDir);
   };
 
   useEffect(() => {
@@ -225,7 +227,8 @@ function ConfigCard() {
       tcpHost !== cfg.tcpHost ||
       tcpPort !== String(cfg.tcpPort) ||
       logLevel !== cfg.logLevel ||
-      retention !== String(cfg.rawRetentionDays));
+      retention !== String(cfg.rawRetentionDays) ||
+      exportDir !== cfg.exportDir);
 
   const onSave = async () => {
     setSaving(true);
@@ -240,6 +243,7 @@ function ConfigCard() {
         tcpPort: Number(tcpPort),
         logLevel,
         rawRetentionDays: Number(retention),
+        exportDir: exportDir.trim(),
       };
       const res = await updateConfig(patch);
       applyConfig(res.config);
@@ -375,6 +379,22 @@ function ConfigCard() {
                 className={inputClass}
               />
             </Field>
+
+            <div className="sm:col-span-2">
+              <Field
+                label="Carpeta de exportación de .txt"
+                hint="Por cada resultado recibido se escribe un <muestra>.txt ahí. Vacío = no exportar."
+              >
+                <input
+                  type="text"
+                  value={exportDir}
+                  spellCheck={false}
+                  onChange={(e) => setExportDir(e.target.value)}
+                  placeholder="C:\Users\Laboratorio\Documents\Hemogramas"
+                  className={inputClass}
+                />
+              </Field>
+            </div>
           </div>
 
           <p className="mt-3 text-xs text-text-muted">

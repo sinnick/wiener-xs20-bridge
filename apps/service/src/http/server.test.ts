@@ -52,6 +52,7 @@ describe("HttpServer - CORS", () => {
       logDir: "/tmp",
       logLevel: "error",
       rawRetentionDays: 90,
+      exportDir: "",
       console: false,
       noListen: false,
       apiToken: API_TOKEN,

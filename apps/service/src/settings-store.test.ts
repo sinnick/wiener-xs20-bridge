@@ -36,6 +36,12 @@ describe("settings-store", () => {
     expect(loadSettings(path)).toEqual(settings);
   });
 
+  test("exportDir vacio se conserva (deshabilitado, no cae al default)", () => {
+    const path = join(tmpDir(), "settings.json");
+    saveSettings(path, { exportDir: "" });
+    expect(loadSettings(path)).toEqual({ exportDir: "" });
+  });
+
   test("crea el directorio padre si no existe", () => {
     const path = join(tmpDir(), "nested", "deep", "settings.json");
     saveSettings(path, { tcpPort: 5100 });
