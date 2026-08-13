@@ -28,8 +28,12 @@ export type PersistedSettings = Partial<
     | "logLevel"
     | "rawRetentionDays"
     | "exportDir"
+    | "updateCheckEnabled"
   >
->;
+> & {
+  /** Version que el usuario eligio omitir en el update-checker ("" = ninguna). */
+  skippedVersion?: string;
+};
 
 const LOG_LEVELS = ["debug", "info", "warn", "error"] as const;
 const CONNECTION_MODES = ["listen", "connect"] as const;
@@ -82,6 +86,13 @@ export function loadSettings(path: string): PersistedSettings {
     // "" es valido: significa exportacion deshabilitada, no debe caer al default.
     if (typeof parsed.exportDir === "string") {
       out.exportDir = parsed.exportDir;
+    }
+    if (typeof parsed.updateCheckEnabled === "boolean") {
+      out.updateCheckEnabled = parsed.updateCheckEnabled;
+    }
+    // "" es valido: significa "ninguna version omitida".
+    if (typeof parsed.skippedVersion === "string") {
+      out.skippedVersion = parsed.skippedVersion;
     }
     return out;
   } catch {

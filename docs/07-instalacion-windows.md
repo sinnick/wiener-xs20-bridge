@@ -1,132 +1,87 @@
-# 07 — Instalación en Windows con NSSM
+# 07 — Instalación en Windows
 
-Esta guía cubre cómo instalar `xs20-service.exe` como un servicio de Windows usando [NSSM](https://nssm.cc/) (Non-Sucking Service Manager).
+## Instalación con el instalador (recomendado)
 
-## Pre-requisitos
+Desde la PC del laboratorio:
 
-- Windows 10/11 o Windows Server 2019+
-- Permisos de administrador en la PC
-- El archivo `xs20-service.exe` (compilado con `bun run build:windows`)
-- NSSM descargado de https://nssm.cc/release/nssm-2.24.zip
+1. Descargar el instalador de la última versión:
+   **https://github.com/sinnick/wiener-xs20-bridge/releases/latest**
+   (el archivo `wiener-xs20-bridge_X.Y.Z_x64-setup.exe`).
 
-## Paso 1 — Crear el directorio del servicio
+2. Ejecutarlo. Como el instalador no está firmado, Windows SmartScreen puede
+   mostrar "Windows protegió tu PC": tocar **"Más información" → "Ejecutar de
+   todas formas"**. (Para verificar la descarga, el hash SHA-256 está publicado
+   junto al instalador en `SHA256SUMS.txt`.)
 
-Como administrador, crear:
+3. Aceptar el pedido de permisos de administrador (UAC) y Siguiente → Instalar.
 
-```powershell
-mkdir "C:\Program Files\WienerXS20"
-mkdir "C:\ProgramData\WienerXS20"
-mkdir "C:\ProgramData\WienerXS20\config"
-mkdir "C:\ProgramData\WienerXS20\db"
-mkdir "C:\ProgramData\WienerXS20\logs"
+Eso deja TODO listo, sin pasos manuales:
+
+- La app **Wiener XS 20** (acceso directo en escritorio y menú Inicio).
+- El servicio de Windows **WienerXS20Service** registrado con auto-arranque:
+  recibe resultados del analizador y exporta los `.txt` **aunque nadie abra la
+  app**, y se relanza solo si crashea o al reiniciar la PC.
+- La regla de firewall para el puerto TCP 5100 (solo se usa en modo
+  "el equipo se conecta a nosotros").
+- El runtime WebView2 (en Windows 10 lo instala solo si falta; Windows 11 ya
+  lo trae).
+
+El log de la registración del servicio queda en
+`C:\ProgramData\WienerXS20\logs\install-service.log`.
+
+**Actualizar a una versión nueva** es correr el instalador nuevo encima (o usar
+el aviso de actualización de la propia app, ver `docs/12-actualizaciones.md`):
+el instalador detiene el servicio, reemplaza los binarios y lo vuelve a
+arrancar. Los datos en `C:\ProgramData\WienerXS20` no se tocan.
+
+**Desinstalar**: Panel de Control → Programas → "Wiener XS 20" → Desinstalar.
+Quita la app, el servicio y la regla de firewall. La base de datos con los
+resultados (`C:\ProgramData\WienerXS20`) se conserva; borrala a mano si querés
+eliminar todo.
+
+> Nota de migración: si esta PC tenía la instalación manual vieja con NSSM en
+> `C:\Program Files\WienerXS20`, el instalador re-apunta el servicio existente
+> a la carpeta nueva automáticamente. Los archivos viejos de esa carpeta pueden
+> borrarse a mano.
+
+## Configurar la conexión con el analizador
+
+Abrir la app → pestaña **Estado** → **Configuración** → "¿Quién inicia la
+conexión?":
+
+a) **"Nos conectamos al equipo"** (lo normal en el XS 20): poner la IP del
+   analizador y puerto 5100. No hay que configurar nada en el analizador.
+
+b) **"El equipo se conecta a nosotros"**: en el equipo, ir a
+   **Setup → Communication Setup → LIS Setup** y configurar Protocol HL7,
+   Server IP = la IP fija de esta PC, Server Port 5100, TCP/IP.
+
+Los cambios se aplican al instante, sin reiniciar nada.
+
+## Token de la API
+
+Al primer arranque el servicio genera un token aleatorio en:
+
+```
+C:\ProgramData\WienerXS20\config\api-token.txt
 ```
 
-Copiar:
-- `xs20-service.exe` → `C:\Program Files\WienerXS20\`
-- `nssm.exe` (de la descarga) → `C:\Program Files\WienerXS20\`
-
-## Paso 2 — Probar el binario en consola primero
-
-**Antes** de registrar como servicio, conviene confirmar que el `.exe` arranca y escucha:
-
-```powershell
-cd "C:\Program Files\WienerXS20"
-.\xs20-service.exe --console --log-level=debug
-```
-
-Debería ver logs en pantalla. Verificar:
-
-```powershell
-# En otra ventana de PowerShell:
-Invoke-WebRequest http://127.0.0.1:7700/api/health | Select-Object -ExpandProperty Content
-```
-
-Si responde JSON con `"status":"ok"`, todo está bien. `Ctrl+C` para detener.
-
-## Paso 3 — Registrar el servicio con NSSM
-
-```powershell
-cd "C:\Program Files\WienerXS20"
-
-# Instalar el servicio (sin --console, va al archivo de log)
-.\nssm.exe install WienerXS20Service "C:\Program Files\WienerXS20\xs20-service.exe"
-
-# Configurar
-.\nssm.exe set WienerXS20Service DisplayName "Wiener XS 20 Bridge"
-.\nssm.exe set WienerXS20Service Description "Recibe resultados HL7 del analizador hematologico Wiener XS 20"
-.\nssm.exe set WienerXS20Service Start SERVICE_AUTO_START
-.\nssm.exe set WienerXS20Service AppDirectory "C:\Program Files\WienerXS20"
-
-# Auto-reiniciar si crashea
-.\nssm.exe set WienerXS20Service AppExit Default Restart
-.\nssm.exe set WienerXS20Service AppRestartDelay 5000
-
-# (Opcional) redirigir stdout/stderr a un archivo extra
-.\nssm.exe set WienerXS20Service AppStdout "C:\ProgramData\WienerXS20\logs\stdout.log"
-.\nssm.exe set WienerXS20Service AppStderr "C:\ProgramData\WienerXS20\logs\stderr.log"
-.\nssm.exe set WienerXS20Service AppRotateFiles 1
-.\nssm.exe set WienerXS20Service AppRotateBytes 10485760
-```
-
-## Paso 4 — Iniciar el servicio
-
-```powershell
-.\nssm.exe start WienerXS20Service
-
-# Verificar
-Get-Service WienerXS20Service
-```
-
-Debería mostrar `Status: Running`.
-
-## Paso 5 — Configurar el firewall
-
-El XS 20 se conectará al puerto TCP 5100 desde la red local. Hay que abrirlo:
-
-```powershell
-New-NetFirewallRule -DisplayName "Wiener XS 20 (HL7 inbound)" `
-  -Direction Inbound -Protocol TCP -LocalPort 5100 -Action Allow `
-  -Profile Domain,Private
-```
-
-El puerto HTTP 7700 sigue en localhost, no necesita regla de firewall.
-
-## Paso 6 — Configurar el XS 20
-
-En el equipo, ir a **Setup → Communication Setup → LIS Setup** y configurar:
-
-- **Protocol**: HL7
-- **Server IP**: la IP fija de la PC con el servicio
-- **Server Port**: `5100`
-- **Communication mode**: TCP/IP
-
-Hacer una corrida de prueba y verificar en los logs:
-
-```powershell
-Get-Content "C:\ProgramData\WienerXS20\logs\service-$(Get-Date -Format 'yyyy-MM-dd').log" -Wait -Tail 20
-```
+Es el que la app usa para autenticarse contra `http://127.0.0.1:7700/api`.
+Si querés rotarlo, borralo y reiniciá el servicio — se genera uno nuevo.
 
 ## Comandos útiles del día a día
 
 ```powershell
-# Detener el servicio (para actualizar el .exe)
-.\nssm.exe stop WienerXS20Service
+# Estado del servicio
+Get-Service WienerXS20Service
 
-# Iniciar
-.\nssm.exe start WienerXS20Service
+# Detener / iniciar / reiniciar (como administrador)
+& "C:\Program Files\Wiener XS 20\nssm.exe" stop WienerXS20Service
+& "C:\Program Files\Wiener XS 20\nssm.exe" start WienerXS20Service
+& "C:\Program Files\Wiener XS 20\nssm.exe" restart WienerXS20Service
 
-# Reiniciar
-.\nssm.exe restart WienerXS20Service
-
-# Estado detallado
-.\nssm.exe status WienerXS20Service
-
-# Editar configuración (abre GUI)
-.\nssm.exe edit WienerXS20Service
-
-# Desinstalar
-.\nssm.exe stop WienerXS20Service
-.\nssm.exe remove WienerXS20Service confirm
+# Salud del servicio
+Invoke-WebRequest http://127.0.0.1:7700/api/health | Select-Object -ExpandProperty Content
 ```
 
 ## Logs en vivo (PowerShell)
@@ -149,18 +104,6 @@ Get-Content "C:\ProgramData\WienerXS20\logs\service-$(Get-Date -Format 'yyyy-MM-
 }
 ```
 
-## Token de la API
-
-Al primer arranque el servicio genera un token aleatorio en:
-
-```
-C:\ProgramData\WienerXS20\config\api-token.txt
-```
-
-Este token es el que la UI Tauri (Fase 2) leerá para autenticarse con `http://127.0.0.1:7700/api`.
-
-Si querés rotarlo, simplemente borralo y reiniciá el servicio — se generará uno nuevo.
-
 ## Troubleshooting
 
 ### El servicio no arranca
@@ -170,7 +113,7 @@ Si querés rotarlo, simplemente borralo y reiniciá el servicio — se generará
 Get-EventLog -LogName Application -Source nssm -Newest 5
 
 # Probar el .exe a mano para ver el error real
-"C:\Program Files\WienerXS20\xs20-service.exe" --console
+& "C:\Program Files\Wiener XS 20\xs20-service.exe" --console
 ```
 
 ### El XS 20 no se conecta
@@ -184,8 +127,57 @@ Get-EventLog -LogName Application -Source nssm -Newest 5
 SQLite con WAL es muy resistente, pero si pasara:
 
 ```powershell
-.\nssm.exe stop WienerXS20Service
-Move-Item "C:\ProgramData\WienerXS20\db\xs20.sqlite" "...\xs20.broken.sqlite"
-.\nssm.exe start WienerXS20Service
+& "C:\Program Files\Wiener XS 20\nssm.exe" stop WienerXS20Service
+Move-Item "C:\ProgramData\WienerXS20\db\xs20.sqlite" "C:\ProgramData\WienerXS20\db\xs20.broken.sqlite"
+& "C:\Program Files\Wiener XS 20\nssm.exe" start WienerXS20Service
 # Se crea una DB vacía. Los raw_messages anteriores se pueden recuperar del .broken.sqlite con sqlite3.exe.
+```
+
+## Apéndice — Instalación manual con NSSM (fallback / referencia)
+
+El instalador hace todo esto solo (via `install-service.ps1`, que viene dentro
+del paquete). Esta receta queda como referencia para instalar a mano un
+`xs20-service.exe` suelto, o para entender qué configura el instalador.
+
+El `nssm.exe` embebido es NSSM 2.24 win64 (dominio público, de
+https://nssm.cc/release/nssm-2.24.zip). SHA-256 del binario:
+`f689ee9af94b00e9e3f0bb072b34caaf207f32dcb4f5782fc9ca351df9a06c97`.
+
+```powershell
+# 1. Carpetas
+mkdir "C:\Program Files\WienerXS20"
+# (C:\ProgramData\WienerXS20 y subcarpetas las crea el servicio al arrancar)
+# Copiar xs20-service.exe y nssm.exe a C:\Program Files\WienerXS20\
+
+# 2. Probar el binario en consola ANTES de registrarlo
+cd "C:\Program Files\WienerXS20"
+.\xs20-service.exe --console --log-level=debug
+# En otra ventana: Invoke-WebRequest http://127.0.0.1:7700/api/health
+# Si responde "status":"ok", Ctrl+C y seguir.
+
+# 3. Registrar y configurar el servicio
+.\nssm.exe install WienerXS20Service "C:\Program Files\WienerXS20\xs20-service.exe"
+.\nssm.exe set WienerXS20Service DisplayName "Wiener XS 20 Bridge"
+.\nssm.exe set WienerXS20Service Description "Recibe resultados HL7 del analizador hematologico Wiener XS 20"
+.\nssm.exe set WienerXS20Service Start SERVICE_AUTO_START
+.\nssm.exe set WienerXS20Service AppDirectory "C:\Program Files\WienerXS20"
+.\nssm.exe set WienerXS20Service AppExit Default Restart
+.\nssm.exe set WienerXS20Service AppRestartDelay 5000
+.\nssm.exe set WienerXS20Service AppStdout "C:\ProgramData\WienerXS20\logs\stdout.log"
+.\nssm.exe set WienerXS20Service AppStderr "C:\ProgramData\WienerXS20\logs\stderr.log"
+.\nssm.exe set WienerXS20Service AppRotateFiles 1
+.\nssm.exe set WienerXS20Service AppRotateBytes 10485760
+
+# 4. Arrancar
+.\nssm.exe start WienerXS20Service
+Get-Service WienerXS20Service   # → Running
+
+# 5. Firewall (solo para modo "el equipo se conecta a nosotros")
+New-NetFirewallRule -DisplayName "Wiener XS 20 (HL7 inbound)" `
+  -Direction Inbound -Protocol TCP -LocalPort 5100 -Action Allow `
+  -Profile Domain,Private
+
+# Desinstalar a mano
+.\nssm.exe stop WienerXS20Service
+.\nssm.exe remove WienerXS20Service confirm
 ```

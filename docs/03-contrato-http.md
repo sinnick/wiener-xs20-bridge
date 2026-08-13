@@ -139,6 +139,39 @@ data: {"time":"2026-04-27T15:32:11.301Z","level":"debug","msg":"OBX parsed","ctx
 
 Heartbeat: el servidor envía `: heartbeat\n\n` cada 30 segundos para mantener viva la conexión.
 
+### Actualizaciones
+
+Ver `docs/12-actualizaciones.md` para el flujo completo. Todos con auth. El tipo
+de respuesta es siempre `UpdateStatusResponse` (`packages/shared/src/api.ts`),
+salvo error.
+
+#### `GET /api/update/status`
+
+Estado actual del updater: `phase` (`idle` | `checking` | `update-available` |
+`downloading` | `downloaded` | `error`), versiones actual/última, resultado del
+último chequeo y progreso de descarga (`download.downloadedBytes` /
+`totalBytes` / `installerPath`). La UI lo pollea (5 min en reposo, 1 s durante
+una descarga).
+
+#### `POST /api/update/check`
+
+Fuerza un chequeo contra GitHub Releases ahora (además del periódico cada 6 h)
+y devuelve el status resultante. Con `updateCheckEnabled: false` no consulta.
+
+#### `POST /api/update/download`
+
+Arranca la descarga del instalador a `<dataDir>/updates/` en background y
+devuelve el status (el progreso se sigue polleando). `409 DOWNLOAD_NOT_READY`
+si no hay una actualización disponible.
+
+#### `POST /api/update/skip`
+
+Body: `{ "version": "0.3.0" }`. "Omitir esta versión": persiste
+`skippedVersion` en settings.json y el banner no vuelve a aparecer para esa
+versión (sí para la siguiente).
+
+Si el servicio arrancó sin updater, los cuatro responden `503 UPDATER_UNAVAILABLE`.
+
 ### Acciones de servicio (fase 1.5+)
 
 #### `POST /api/actions/reprocess/:rawMessageId`

@@ -26,6 +26,8 @@ export interface ResolvedConfig extends ServiceConfig {
   apiToken: string;
   /** Path del settings.json editable desde la UI (persistencia de cambios). */
   settingsPath: string;
+  /** Version que el usuario eligio omitir en el update-checker ("" = ninguna). */
+  skippedVersion: string;
 }
 
 function defaultDataDir(): string {
@@ -59,6 +61,8 @@ function defaultConfig(): ResolvedConfig {
     logLevel: "info",
     rawRetentionDays: 90,
     exportDir: join(dataDir, "exportes"),
+    updateCheckEnabled: true,
+    skippedVersion: "",
     console: false,
     noListen: false,
     // Token aleatorio por instalacion. Si no existe en disco, lo generamos

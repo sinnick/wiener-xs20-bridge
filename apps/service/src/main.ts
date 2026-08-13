@@ -18,8 +18,11 @@ import { HttpServer } from "./http/server.js";
 import { AnalyzerClient } from "./listener/analyzer-client.js";
 import { TcpServer } from "./listener/tcp-server.js";
 import { Logger } from "./logger.js";
+import { UpdateChecker } from "./update/update-checker.js";
+import { VERSION } from "./version.js";
 
-const VERSION = "0.1.0";
+/** Repo publico de GitHub contra el que se chequean versiones nuevas. */
+const UPDATE_REPO_SLUG = "sinnick/wiener-xs20-bridge";
 
 function loadOrCreateApiToken(dataDir: string): string {
   const tokenDir = join(dataDir, "config");
@@ -152,6 +155,17 @@ async function main(): Promise<void> {
     tcp.start();
   }
 
+  // Chequeo de versiones nuevas contra GitHub Releases. Lee los settings en
+  // vivo, asi el toggle y el "omitir version" de la app aplican sin reiniciar.
+  const updateChecker = new UpdateChecker({
+    currentVersion: VERSION,
+    repoSlug: UPDATE_REPO_SLUG,
+    updatesDir: join(dataDir, "updates"),
+    logger,
+    isEnabled: () => config.updateCheckEnabled,
+    getSkippedVersion: () => config.skippedVersion,
+  });
+
   // HTTP API
   const http = new HttpServer({
     repo,
@@ -163,8 +177,10 @@ async function main(): Promise<void> {
     port: config.httpPort,
     startedAt,
     version: VERSION,
+    updateChecker,
   });
   http.start();
+  updateChecker.start();
 
   logger.info("service.started", {
     uptimeStartedAt: startedAt.toISOString(),
@@ -178,6 +194,11 @@ async function main(): Promise<void> {
     shuttingDown = true;
     logger.info("service.stopping", { signal });
     clearInterval(purgeTimer);
+    try {
+      updateChecker.stop();
+    } catch {
+      /* ignore */
+    }
     try {
       http.stop();
     } catch {

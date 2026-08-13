@@ -3,17 +3,28 @@
  */
 
 import { useEffect, useState } from "react";
-import { Activity, Database, Radio, Settings, Check, AlertCircle } from "lucide-react";
+import {
+  Activity,
+  Database,
+  Radio,
+  Settings,
+  Check,
+  AlertCircle,
+  RefreshCw,
+} from "lucide-react";
 
 import {
   getHealth,
   getConfig,
   updateConfig,
+  getUpdateStatus,
+  checkForUpdates,
   apiErrorMessage,
   type ConnectionMode,
   type HealthResponse,
   type ServiceConfig,
   type UpdateConfigRequest,
+  type UpdateStatusResponse,
 } from "../lib/api";
 import { Dot } from "../components/primitives";
 
@@ -171,6 +182,9 @@ export function StatusView() {
               </Row>
             </Card>
 
+            {/* Actualizaciones */}
+            <UpdatesCard currentVersion={health.version} />
+
             {/* Configuracion editable */}
             <div className="md:col-span-2">
               <ConfigCard />
@@ -179,6 +193,112 @@ export function StatusView() {
         )}
       </div>
     </div>
+  );
+}
+
+// ─── Card de actualizaciones ─────────────────────────────────────────────────
+
+function UpdatesCard({ currentVersion }: { currentVersion: string }) {
+  const [status, setStatus] = useState<UpdateStatusResponse | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [toggling, setToggling] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    getUpdateStatus()
+      .then((st) => active && setStatus(st))
+      .catch(() => {
+        // Servicio viejo sin el endpoint: la card muestra solo la version.
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const onCheckNow = async () => {
+    setChecking(true);
+    setError(null);
+    try {
+      setStatus(await checkForUpdates());
+    } catch (e) {
+      setError(apiErrorMessage(e));
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  const onToggle = async (enabled: boolean) => {
+    setToggling(true);
+    setError(null);
+    try {
+      await updateConfig({ updateCheckEnabled: enabled });
+      setStatus(await getUpdateStatus());
+    } catch (e) {
+      setError(apiErrorMessage(e));
+    } finally {
+      setToggling(false);
+    }
+  };
+
+  return (
+    <Card icon={<RefreshCw className="h-5 w-5" strokeWidth={1.5} />} title="Actualizaciones">
+      <Row label="Versión instalada">
+        <span className="font-mono tnum">{currentVersion}</span>
+      </Row>
+      {status && (
+        <>
+          <Row label="Última versión publicada">
+            <span className="font-mono tnum">
+              {status.latestVersion ?? (status.lastCheckAt ? "estás al día" : "—")}
+            </span>
+          </Row>
+          <Row label="Último chequeo">
+            <span className="font-mono text-sm tnum">
+              {status.lastCheckAt
+                ? new Date(status.lastCheckAt).toLocaleString("es-AR")
+                : "todavía no se chequeó"}
+            </span>
+          </Row>
+          {status.lastCheckError && (
+            <Row label="Último error">
+              <span className="text-sm text-high-text">{status.lastCheckError}</span>
+            </Row>
+          )}
+          {status.skippedVersion && (
+            <Row label="Versión omitida">
+              <span className="font-mono tnum">{status.skippedVersion}</span>
+            </Row>
+          )}
+
+          <div className="flex items-center justify-between pt-1">
+            <label className="flex cursor-pointer items-center gap-2 text-sm text-text-muted">
+              <input
+                type="checkbox"
+                checked={status.updateCheckEnabled}
+                disabled={toggling}
+                onChange={(e) => void onToggle(e.target.checked)}
+                className="h-4 w-4 accent-accent"
+              />
+              Buscar actualizaciones automáticamente
+            </label>
+            <button
+              onClick={() => void onCheckNow()}
+              disabled={checking || !status.updateCheckEnabled}
+              className="rounded-sm px-3 py-1.5 text-xs text-text-muted hover:bg-border/30 hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              {checking ? "Buscando…" : "Buscar ahora"}
+            </button>
+          </div>
+          {error && (
+            <p className="inline-flex items-center gap-1.5 text-sm text-high-text">
+              <AlertCircle className="h-4 w-4" strokeWidth={2} />
+              {error}
+            </p>
+          )}
+        </>
+      )}
+    </Card>
   );
 }
 

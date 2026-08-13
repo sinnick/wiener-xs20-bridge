@@ -15,14 +15,18 @@ navegador entero como haría Electron.
 │        └── fetch() → http://127.0.0.1:7700/api         │
 │                                                        │
 │   Shell nativo (Rust, src-tauri/src/main.rs):          │
-│    - lanza xs20-service.exe al abrir                    │
+│    - lanza xs20-service.exe al abrir (solo si no hay    │
+│      un servicio ya escuchando en el puerto 7700)       │
 │    - lee api-token.txt y se lo pasa al frontend         │
-│    - mata el servicio al cerrar                         │
+│    - lanza el instalador de updates (run_installer)     │
+│    - mata el servicio hijo al cerrar                    │
 └────────────────────────────────────────────────────────┘
 ```
 
 El frontend hace todo el trabajo visual. El shell Rust es mínimo: arranca el
-servicio y gestiona el token. Nada de lógica de negocio en Rust.
+servicio, gestiona el token y expone dos comandos (`get_api_token` y
+`run_installer`, este último para el flujo de actualizaciones — ver
+`docs/12-actualizaciones.md`). Nada de lógica de negocio en Rust.
 
 ## Desarrollo (sin equipo, contra el simulador)
 
@@ -60,7 +64,13 @@ En dev, el `data-dir` por defecto del servicio en Linux es
   roja, plaquetas) con rangos de referencia y flags, alarmas morfológicas, y los
   histogramas.
 - **Actividad** — logs del servicio en vivo (SSE), con filtro por nivel y pausa.
-- **Estado** — health del servicio: conexión TCP, base de datos, uptime.
+- **Estado** — health del servicio: conexión TCP, base de datos, uptime, y la
+  card "Actualizaciones" (buscar ahora, toggle de chequeo automático).
+
+Además hay un **banner global de actualizaciones** (`components/UpdateBanner.tsx`
++ `hooks/useUpdateStatus.ts`) que aparece en cualquier vista cuando el servicio
+detectó una versión nueva: descargar con progreso → "Instalar y reiniciar"
+(cierra la app y lanza el instalador via el comando `run_installer`).
 
 ## Build de escritorio (Tauri)
 
@@ -76,21 +86,19 @@ En dev, el `data-dir` por defecto del servicio en Linux es
 bun run tauri:build
 # produce el instalador en:
 #   apps/ui/src-tauri/target/release/bundle/nsis/*.exe
-#   apps/ui/src-tauri/target/release/bundle/msi/*.msi
 ```
 
 ### Empaquetado final
 
-El instalador de la UI y el `xs20-service.exe` van juntos. Dos opciones:
+El instalador NSIS lleva todo adentro: la app, `xs20-service.exe`, `nssm.exe` y
+los scripts de registración. Al instalar deja el servicio de Windows
+**WienerXS20Service** corriendo con auto-arranque, y la UI detecta que ya está
+corriendo (sonda al puerto 7700) y no lo vuelve a lanzar. Ver
+`docs/07-instalacion-windows.md` y `docs/10-build-windows.md` (sección "Qué
+empaqueta el instalador").
 
-1. **Servicio + UI en la misma carpeta**: poné `xs20-service.exe` junto al
-   ejecutable de la app. El shell Rust lo lanza al abrir y lo mata al cerrar.
-   Ideal si el usuario abre la app manualmente.
-
-2. **Servicio como servicio de Windows (recomendado para producción)**:
-   instalá `xs20-service.exe` con NSSM (ver `docs/07`) para que corra siempre en
-   background con auto-arranque. La UI detecta que ya está corriendo y no lo
-   vuelve a lanzar. Ideal para una PC de laboratorio que queda prendida.
+En dev (o en macOS/Linux, sin servicio registrado), el shell lanza
+`xs20-service` como proceso hijo al abrir y lo mata al cerrar.
 
 ## Íconos
 

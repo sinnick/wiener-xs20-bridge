@@ -82,4 +82,25 @@ describe("settings-store", () => {
     writeFileSync(path, "{ esto no es json ", "utf-8");
     expect(loadSettings(path)).toEqual({});
   });
+
+  test("updateCheckEnabled: boolean valido se conserva, otro tipo se descarta", () => {
+    const path = join(tmpDir(), "settings.json");
+    saveSettings(path, { updateCheckEnabled: false });
+    expect(loadSettings(path)).toEqual({ updateCheckEnabled: false });
+
+    writeFileSync(path, JSON.stringify({ updateCheckEnabled: "si" }), "utf-8");
+    expect(loadSettings(path)).toEqual({});
+  });
+
+  test("skippedVersion: string (incluso vacio) se conserva, otro tipo se descarta", () => {
+    const path = join(tmpDir(), "settings.json");
+    saveSettings(path, { skippedVersion: "0.2.0" });
+    expect(loadSettings(path)).toEqual({ skippedVersion: "0.2.0" });
+
+    saveSettings(path, { skippedVersion: "" });
+    expect(loadSettings(path)).toEqual({ skippedVersion: "" });
+
+    writeFileSync(path, JSON.stringify({ skippedVersion: 2 }), "utf-8");
+    expect(loadSettings(path)).toEqual({});
+  });
 });

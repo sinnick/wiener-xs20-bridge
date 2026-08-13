@@ -9,6 +9,11 @@
  *  GET  /api/results/:id
  *  GET  /api/logs/stream  (SSE)
  *  GET  /api/config
+ *  PUT  /api/config
+ *  GET  /api/update/status
+ *  POST /api/update/check
+ *  POST /api/update/download
+ *  POST /api/update/skip
  */
 
 import type { Server } from "bun";
@@ -31,7 +36,9 @@ import type { Logger } from "../logger.js";
 import type { AnalyzerClient } from "../listener/analyzer-client.js";
 import type { TcpServer } from "../listener/tcp-server.js";
 import type { ResolvedConfig } from "../config.js";
+import type { PersistedSettings } from "../settings-store.js";
 import { saveSettings } from "../settings-store.js";
+import type { UpdateChecker } from "../update/update-checker.js";
 
 /**
  * Headers CORS: la UI Tauri corre en origen https://tauri.localhost y hace
@@ -40,7 +47,7 @@ import { saveSettings } from "../settings-store.js";
  */
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, OPTIONS",
+  "Access-Control-Allow-Methods": "GET, POST, PUT, OPTIONS",
   "Access-Control-Allow-Headers": "X-XS20-Token, Content-Type",
 };
 
@@ -64,6 +71,11 @@ export interface HttpServerOptions {
   startedAt: Date;
   /** Version del servicio (para health). */
   version: string;
+  /**
+   * Chequeo de updates. Opcional para que los tests que no lo ejercitan no
+   * tengan que construirlo (los endpoints /api/update/* responden 503).
+   */
+  updateChecker?: UpdateChecker;
 }
 
 export class HttpServer {
@@ -121,6 +133,18 @@ export class HttpServer {
       ) {
         if (!this.checkAuth(req, url)) return this.unauthorized();
         res = await this.updateConfig(req);
+      } else if (path === "/api/update/status" && req.method === "GET") {
+        if (!this.checkAuth(req, url)) return this.unauthorized();
+        res = this.updateStatus();
+      } else if (path === "/api/update/check" && req.method === "POST") {
+        if (!this.checkAuth(req, url)) return this.unauthorized();
+        res = await this.updateCheck();
+      } else if (path === "/api/update/download" && req.method === "POST") {
+        if (!this.checkAuth(req, url)) return this.unauthorized();
+        res = this.updateDownload();
+      } else if (path === "/api/update/skip" && req.method === "POST") {
+        if (!this.checkAuth(req, url)) return this.unauthorized();
+        res = await this.updateSkip(req);
       } else {
         res = json({ error: { code: "NOT_FOUND", message: path } }, 404);
       }
@@ -287,6 +311,24 @@ export class HttpServer {
       logLevel: c.logLevel,
       rawRetentionDays: c.rawRetentionDays,
       exportDir: c.exportDir,
+      updateCheckEnabled: c.updateCheckEnabled,
+    };
+  }
+
+  /** Snapshot completo de los settings persistibles, para saveSettings. */
+  private persistedSettings(): PersistedSettings {
+    const c = this.opts.config;
+    return {
+      connectionMode: c.connectionMode,
+      analyzerHost: c.analyzerHost,
+      analyzerPort: c.analyzerPort,
+      tcpPort: c.tcpPort,
+      tcpHost: c.tcpHost,
+      logLevel: c.logLevel,
+      rawRetentionDays: c.rawRetentionDays,
+      exportDir: c.exportDir,
+      updateCheckEnabled: c.updateCheckEnabled,
+      skippedVersion: c.skippedVersion,
     };
   }
 
@@ -418,6 +460,15 @@ export class HttpServer {
       }
     }
 
+    let newUpdateCheckEnabled = cfg.updateCheckEnabled;
+    if (body.updateCheckEnabled !== undefined) {
+      if (typeof body.updateCheckEnabled !== "boolean") {
+        errors.push("updateCheckEnabled debe ser true o false");
+      } else {
+        newUpdateCheckEnabled = body.updateCheckEnabled;
+      }
+    }
+
     if (errors.length > 0) {
       return json(
         { error: { code: "VALIDATION_ERROR", message: errors.join(". ") } },
@@ -510,18 +561,12 @@ export class HttpServer {
     // Carpeta de exportacion: aplica en el proximo resultado recibido.
     cfg.exportDir = newExportDir;
 
+    // Chequeo de updates: el UpdateChecker lo lee en vivo via isEnabled().
+    cfg.updateCheckEnabled = newUpdateCheckEnabled;
+
     // Persistir para que sobreviva a reinicios.
     try {
-      saveSettings(cfg.settingsPath, {
-        connectionMode: cfg.connectionMode,
-        analyzerHost: cfg.analyzerHost,
-        analyzerPort: cfg.analyzerPort,
-        tcpPort: cfg.tcpPort,
-        tcpHost: cfg.tcpHost,
-        logLevel: cfg.logLevel,
-        rawRetentionDays: cfg.rawRetentionDays,
-        exportDir: cfg.exportDir,
-      });
+      saveSettings(cfg.settingsPath, this.persistedSettings());
     } catch (e) {
       this.opts.logger.error("config.persist_failed", { error: (e as Error).message });
     }
@@ -535,6 +580,7 @@ export class HttpServer {
       logLevel: cfg.logLevel,
       rawRetentionDays: cfg.rawRetentionDays,
       exportDir: cfg.exportDir,
+      updateCheckEnabled: cfg.updateCheckEnabled,
     });
 
     const resp: UpdateConfigResponse = {
@@ -542,6 +588,82 @@ export class HttpServer {
       restartRequired: false,
     };
     return json(resp);
+  }
+
+  // ─── Updates ──────────────────────────────────────────────────────────────
+
+  private updaterUnavailable(): Response {
+    return json(
+      {
+        error: {
+          code: "UPDATER_UNAVAILABLE",
+          message: "Este servicio se inició sin el chequeo de actualizaciones.",
+        },
+      },
+      503,
+    );
+  }
+
+  private updateStatus(): Response {
+    const checker = this.opts.updateChecker;
+    if (!checker) return this.updaterUnavailable();
+    return json(checker.getStatus());
+  }
+
+  private async updateCheck(): Promise<Response> {
+    const checker = this.opts.updateChecker;
+    if (!checker) return this.updaterUnavailable();
+    return json(await checker.checkNow());
+  }
+
+  private updateDownload(): Response {
+    const checker = this.opts.updateChecker;
+    if (!checker) return this.updaterUnavailable();
+    const phase = checker.getStatus().phase;
+    if (phase === "idle" || phase === "checking") {
+      return json(
+        {
+          error: {
+            code: "DOWNLOAD_NOT_READY",
+            message: "No hay una actualización disponible para descargar.",
+          },
+        },
+        409,
+      );
+    }
+    return json(checker.startDownload());
+  }
+
+  /** POST /api/update/skip {version} — "omitir esta versión" del banner. */
+  private async updateSkip(req: Request): Promise<Response> {
+    const checker = this.opts.updateChecker;
+    if (!checker) return this.updaterUnavailable();
+
+    let body: { version?: unknown };
+    try {
+      body = (await req.json()) as { version?: unknown };
+    } catch {
+      return json(
+        { error: { code: "VALIDATION_ERROR", message: "El cuerpo no es JSON válido" } },
+        400,
+      );
+    }
+    if (typeof body.version !== "string" || body.version.trim().length === 0) {
+      return json(
+        { error: { code: "VALIDATION_ERROR", message: "Falta el campo 'version'" } },
+        400,
+      );
+    }
+
+    const cfg = this.opts.config;
+    cfg.skippedVersion = body.version.trim();
+    try {
+      saveSettings(cfg.settingsPath, this.persistedSettings());
+    } catch (e) {
+      this.opts.logger.error("config.persist_failed", { error: (e as Error).message });
+    }
+    this.opts.logger.info("update.version_skipped", { version: cfg.skippedVersion });
+    return json(checker.getStatus());
   }
 
   private logStream(): Response {

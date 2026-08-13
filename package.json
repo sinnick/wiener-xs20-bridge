@@ -9,6 +9,7 @@
     "scripts"
   ],
   "scripts": {
+    "bump": "bun run scripts/bump-version.ts",
     "dev:service": "cd apps/service && bun run dev",
     "dev:ui": "cd apps/ui && bun run dev",
     "dev:simulator": "bun run scripts/simulator/index.ts",

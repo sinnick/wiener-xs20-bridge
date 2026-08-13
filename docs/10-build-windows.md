@@ -1,17 +1,40 @@
-# Compilar la app de escritorio en Windows (.exe / .msi)
+# Compilar la app de escritorio en Windows (.exe)
 
-## Build automático (GitHub Actions)
+## Publicar una versión (GitHub Releases)
 
-Cada push a `master` (y también manualmente via `workflow_dispatch`) dispara el
-workflow `.github/workflows/build-windows.yml` en un runner `windows-latest`.
-Ese workflow instala dependencias, corre typecheck y tests, compila el servicio
-a `xs20-service.exe`, lo copia junto a los recursos de Tauri, y genera el
-instalador con `cargo tauri build`. Al terminar quedan publicados dos artifacts:
+La forma oficial de distribuir el instalador es una **GitHub Release** disparada
+por un tag `vX.Y.Z`:
 
-- `wiener-xs20-setup-nsis` — el instalador NSIS (`-setup.exe`)
-- `wiener-xs20-setup-msi` — el instalador MSI
+```bash
+bun run bump 0.2.0        # sincroniza la version en todo el monorepo
+git add -A && git commit -m "v0.2.0"
+git tag v0.2.0
+git push && git push --tags
+```
 
-Para descargarlos localmente (necesitás el [GitHub CLI](https://cli.github.com/)):
+El push del tag dispara `.github/workflows/release.yml`, que corre typecheck y
+tests, compila todo, verifica que el tag coincida con la versión de
+`package.json`, y publica en Releases:
+
+- `wiener-xs20-bridge_0.2.0_x64-setup.exe` — el instalador NSIS
+- `SHA256SUMS.txt` — hash para verificar la descarga
+
+La URL estable de la última versión es
+`https://github.com/sinnick/wiener-xs20-bridge/releases/latest`. El repo es
+público, así que el laboratorio puede descargar el instalador sin cuenta de
+GitHub. Además el auto-update de la app consulta esa misma Release (ver
+`docs/12-actualizaciones.md`).
+
+**Importante**: la versión se cambia SOLO con `bun run bump` — sincroniza los
+`package.json` del monorepo, `Cargo.toml` y `apps/service/src/version.ts`. Los
+instaladores ya no se commitean al repo.
+
+## Build de prueba (GitHub Actions)
+
+Cada push a `main` (y también manualmente via `workflow_dispatch`) dispara el
+workflow `.github/workflows/build-windows.yml` en un runner `windows-latest`,
+que genera el instalador NSIS y lo sube como artifact `wiener-xs20-setup-nsis`
+(sirve para smoke-tests; expira a los 90 días y requiere login para bajarlo).
 
 ```bash
 gh run download <run-id> -n wiener-xs20-setup-nsis -D ./dist-windows
@@ -20,10 +43,10 @@ gh run download <run-id> -n wiener-xs20-setup-nsis -D ./dist-windows
 Podés ver el `<run-id>` con `gh run list --workflow=build-windows.yml`, o entrar
 a la pestaña "Actions" del repo en GitHub.
 
-Esta es la forma recomendada de generar el instalador — no necesitás tener
-Windows, Rust ni Visual C++ Build Tools instalados en tu máquina. La sección
-siguiente ("Compilar" en adelante) queda como método manual / fallback, por si
-necesitás compilar localmente en Windows (por ejemplo para debug).
+No necesitás tener Windows, Rust ni Visual C++ Build Tools instalados en tu
+máquina para nada de esto. La sección siguiente ("Compilar" en adelante) queda
+como método manual / fallback, por si necesitás compilar localmente en Windows
+(por ejemplo para debug).
 
 ## Build manual (fallback)
 
@@ -88,26 +111,28 @@ bun run tauri build
 El instalador queda en:
 
 ```
-apps\ui\src-tauri\target\release\bundle\nsis\Wiener XS 20_0.1.0_x64-setup.exe
-apps\ui\src-tauri\target\release\bundle\msi\Wiener XS 20_0.1.0_x64_en-US.msi
+apps\ui\src-tauri\target\release\bundle\nsis\Wiener XS 20_<version>_x64-setup.exe
 ```
 
-Cualquiera de los dos instala la app. El NSIS (`-setup.exe`) es el más común.
+## 3. Qué empaqueta el instalador
 
-## 3. Empaquetar servicio + app juntos
+El bundle NSIS usa un template propio (`src-tauri\nsis\installer.nsi`, fork del
+template de Tauri v1.6.3 con bloques marcados `XS20 CUSTOM`) y lleva como
+recursos `xs20-service.exe`, `nssm.exe` y los scripts
+`install-service.ps1` / `uninstall-service.ps1` (`src-tauri\windows\`). Al
+instalar: detiene el servicio si existía, copia los archivos, registra
+**WienerXS20Service** con NSSM (auto-arranque + auto-restart), crea la regla de
+firewall y lo arranca. Ver `docs/07-instalacion-windows.md`.
 
-La app necesita el `xs20-service.exe` al lado para lanzarlo. Dos formas:
+La app detecta al abrir si el servicio ya corre (sonda al puerto 7700) y en ese
+caso no lanza un proceso hijo propio; sin servicio registrado (por ejemplo en
+dev o macOS) lo lanza como hijo y lo cierra al salir.
 
-### Opción A — Todo junto (simple)
-Copiá `apps\service\dist\xs20-service.exe` a la carpeta donde se instala la app
-(por defecto `C:\Program Files\Wiener XS 20\`). Al abrir la app, el shell lanza el
-servicio solo, y lo cierra al salir. Ideal si el usuario abre la app a mano.
-
-### Opción B — Servicio de Windows (producción, recomendado)
-Instalá el servicio con NSSM para que corra siempre en background con
-auto-arranque (ver `docs/07-instalacion-windows.md`). La app detecta que ya está
-corriendo y no lo vuelve a lanzar. Ideal para una PC de laboratorio prendida todo
-el día: los resultados se reciben aunque nadie tenga la app abierta.
+> **Fork del template NSIS**: `@tauri-apps/cli` está pineado a `1.6.3` para que
+> el template no drifte respecto del bundler. Si se bumpea el CLI, hay que
+> re-diffear `nsis/installer.nsi` contra el template del tag nuevo
+> (`tooling/bundler/src/bundle/windows/templates/installer.nsi` en el repo de
+> Tauri) y re-aplicar los bloques `XS20 CUSTOM`.
 
 ## Si algo falla
 

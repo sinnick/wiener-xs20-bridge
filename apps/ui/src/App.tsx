@@ -9,6 +9,8 @@ import { ResultsList } from "./pages/ResultsList";
 import { ResultDetail } from "./pages/ResultDetail";
 import { LogsView } from "./pages/LogsView";
 import { StatusView } from "./pages/StatusView";
+import { UpdateBanner } from "./components/UpdateBanner";
+import { useUpdateStatus } from "./hooks/useUpdateStatus";
 import { streamLogs } from "./lib/api";
 
 type View = "results" | "logs" | "status";
@@ -17,6 +19,7 @@ export function App() {
   const [view, setView] = useState<View>("results");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
+  const update = useUpdateStatus();
 
   // Escuchamos el stream de logs globalmente: cuando llega un "hl7.parsed",
   // refrescamos la lista de resultados sin que el usuario tenga que recargar.
@@ -78,15 +81,18 @@ export function App() {
       </aside>
 
       {/* Contenido */}
-      <main className="flex-1 overflow-hidden">
-        {view === "results" && selectedId === null && (
-          <ResultsList onSelect={openResult} refreshKey={refreshKey} />
-        )}
-        {view === "results" && selectedId !== null && (
-          <ResultDetail id={selectedId} onBack={backToList} />
-        )}
-        {view === "logs" && <LogsView />}
-        {view === "status" && <StatusView />}
+      <main className="flex flex-1 flex-col overflow-hidden">
+        <UpdateBanner update={update} />
+        <div className="flex-1 overflow-hidden">
+          {view === "results" && selectedId === null && (
+            <ResultsList onSelect={openResult} refreshKey={refreshKey} />
+          )}
+          {view === "results" && selectedId !== null && (
+            <ResultDetail id={selectedId} onBack={backToList} />
+          )}
+          {view === "logs" && <LogsView />}
+          {view === "status" && <StatusView />}
+        </div>
       </main>
     </div>
   );

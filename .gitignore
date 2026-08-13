@@ -7,6 +7,10 @@ dist/
 build/
 *.exe
 
+# NSSM va commiteado: el instalador lo necesita para registrar el servicio
+# de Windows (2.24 win64, dominio publico; SHA-256 en docs/07)
+!apps/ui/src-tauri/windows/nssm.exe
+
 # OS
 .DS_Store
 Thumbs.db
@@ -37,6 +41,3 @@ data-portable/
 
 # Staging del paquete de distribucion (el .zip listo para copiar; se regenera)
 paquete-distribucion/
-
-# Instalador versionado a proposito (excepcion a la regla *.exe de arriba)
-!installers/*.exe

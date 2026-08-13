@@ -18,6 +18,7 @@ import type {
   ServiceConfig,
   UpdateConfigRequest,
   UpdateConfigResponse,
+  UpdateStatusResponse,
 } from "@xs20/shared";
 
 const BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:7700";
@@ -36,15 +37,22 @@ let cachedToken: string | null = null;
  * `window.__TAURI__.invoke`, `window.__TAURI__.tauri.invoke` o el low-level
  * `window.__TAURI_INVOKE__`. Probamos las tres para no depender de una sola.
  */
-function getTauriInvoke(): ((cmd: string) => Promise<string>) | undefined {
+type TauriInvoke = (cmd: string, args?: Record<string, unknown>) => Promise<unknown>;
+
+function getTauriInvoke(): TauriInvoke | undefined {
   const w = window as unknown as {
     __TAURI__?: {
-      invoke?: (cmd: string) => Promise<string>;
-      tauri?: { invoke?: (cmd: string) => Promise<string> };
+      invoke?: TauriInvoke;
+      tauri?: { invoke?: TauriInvoke };
     };
-    __TAURI_INVOKE__?: (cmd: string) => Promise<string>;
+    __TAURI_INVOKE__?: TauriInvoke;
   };
   return w.__TAURI__?.invoke ?? w.__TAURI__?.tauri?.invoke ?? w.__TAURI_INVOKE__;
+}
+
+/** True si corremos dentro del shell Tauri (vs navegador en dev). */
+export function isTauri(): boolean {
+  return getTauriInvoke() !== undefined;
 }
 
 export async function initToken(): Promise<void> {
@@ -52,7 +60,7 @@ export async function initToken(): Promise<void> {
 
   if (tauriInvoke) {
     try {
-      cachedToken = await tauriInvoke("get_api_token");
+      cachedToken = (await tauriInvoke("get_api_token")) as string;
       return;
     } catch {
       // cae al localStorage
@@ -81,6 +89,21 @@ async function apiGet<T>(path: string): Promise<T> {
   if (!res.ok) {
     const body = await res.text();
     throw new ApiError(res.status, body);
+  }
+  return (await res.json()) as T;
+}
+
+async function apiPost<T>(path: string, body?: unknown): Promise<T> {
+  const res = await fetch(`${BASE}${path}`, {
+    method: "POST",
+    headers: {
+      "X-XS20-Token": getToken(),
+      ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
+    },
+    ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+  });
+  if (!res.ok) {
+    throw new ApiError(res.status, await res.text());
   }
   return (await res.json()) as T;
 }
@@ -145,6 +168,36 @@ export async function updateConfig(
   return (await res.json()) as UpdateConfigResponse;
 }
 
+// ─── Actualizaciones ─────────────────────────────────────────────────────────
+
+export function getUpdateStatus(): Promise<UpdateStatusResponse> {
+  return apiGet<UpdateStatusResponse>("/api/update/status");
+}
+
+export function checkForUpdates(): Promise<UpdateStatusResponse> {
+  return apiPost<UpdateStatusResponse>("/api/update/check");
+}
+
+export function startUpdateDownload(): Promise<UpdateStatusResponse> {
+  return apiPost<UpdateStatusResponse>("/api/update/download");
+}
+
+export function skipUpdateVersion(version: string): Promise<UpdateStatusResponse> {
+  return apiPost<UpdateStatusResponse>("/api/update/skip", { version });
+}
+
+/**
+ * Lanza el instalador descargado via el comando Rust `run_installer` y cierra
+ * la app. Solo funciona dentro del shell Tauri en Windows.
+ */
+export async function runInstaller(installerPath: string): Promise<void> {
+  const tauriInvoke = getTauriInvoke();
+  if (!tauriInvoke) {
+    throw new Error("Solo disponible dentro de la aplicación de escritorio");
+  }
+  await tauriInvoke("run_installer", { path: installerPath });
+}
+
 /**
  * Extrae un mensaje legible del cuerpo de error del servicio
  * ({ error: { message } }). Si no se puede parsear, devuelve el texto crudo.
@@ -194,4 +247,5 @@ export type {
   ServiceConfig,
   UpdateConfigRequest,
   UpdateConfigResponse,
+  UpdateStatusResponse,
 };

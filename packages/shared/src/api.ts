@@ -2,7 +2,7 @@
  * Contrato HTTP entre el servicio y la UI.
  *
  * El servicio escucha en http://127.0.0.1:7700 (configurable).
- * La UI Electrobun consume estos endpoints. NUNCA habla TCP ni HL7 directo.
+ * La UI Tauri consume estos endpoints. NUNCA habla TCP ni HL7 directo.
  *
  * Ver docs/03-contrato-http.md para el detalle de cada endpoint.
  */
@@ -85,6 +85,8 @@ export interface ServiceConfig {
   rawRetentionDays: number;
   /** Carpeta donde escribir el .txt por muestra al recibir. "" = deshabilitado. */
   exportDir: string;
+  /** Si true, el servicio chequea GitHub Releases buscando versiones nuevas. */
+  updateCheckEnabled: boolean;
 }
 
 export type UpdateConfigRequest = Partial<
@@ -98,6 +100,7 @@ export type UpdateConfigRequest = Partial<
     | "logLevel"
     | "rawRetentionDays"
     | "exportDir"
+    | "updateCheckEnabled"
   >
 >;
 
@@ -154,6 +157,46 @@ export interface HealthResponse {
   /** Ultima vez que recibimos un mensaje del XS 20 (ISO o null). */
   lastMessageAt: string | null;
   version: string;
+}
+
+// ─── Actualizaciones ─────────────────────────────────────────────────────────
+// El servicio chequea GitHub Releases periodicamente. La UI hace polling de
+// GET /api/update/status y muestra un banner cuando hay version nueva.
+// Ver docs/12-actualizaciones.md.
+
+export type UpdatePhase =
+  | "idle"
+  | "checking"
+  | "update-available"
+  | "downloading"
+  | "downloaded"
+  | "error";
+
+export interface UpdateStatusResponse {
+  phase: UpdatePhase;
+  /** Version que esta corriendo este servicio. */
+  currentVersion: string;
+  /** Ultima version publicada, o null si no hubo chequeo aun o estamos al dia. */
+  latestVersion: string | null;
+  /** Cuerpo (markdown) del Release, recortado. Null si no hay version nueva. */
+  releaseNotes: string | null;
+  /** ISO de publicacion del Release, o null. */
+  publishedAt: string | null;
+  /** ISO del ultimo chequeo (exitoso o no), o null si nunca se chequeo. */
+  lastCheckAt: string | null;
+  /** Error del ultimo chequeo (red caida, rate limit), o null si salio bien. */
+  lastCheckError: string | null;
+  updateCheckEnabled: boolean;
+  /** Version que el usuario eligio omitir ("" = ninguna). */
+  skippedVersion: string;
+  /** Estado de la descarga del instalador, o null si no se inicio. */
+  download: {
+    totalBytes: number | null;
+    downloadedBytes: number;
+    /** Path absoluto del instalador listo, seteado cuando phase = "downloaded". */
+    installerPath: string | null;
+    error: string | null;
+  } | null;
 }
 
 // ─── Logs en vivo (SSE) ──────────────────────────────────────────────────────

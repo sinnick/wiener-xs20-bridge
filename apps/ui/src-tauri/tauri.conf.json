@@ -8,7 +8,7 @@
   },
   "package": {
     "productName": "Wiener XS 20",
-    "version": "0.1.0"
+    "version": "../package.json"
   },
   "tauri": {
     "allowlist": {
@@ -34,8 +34,7 @@
     "bundle": {
       "active": true,
       "identifier": "ar.com.craftly.wienerxs20",
-      "targets": ["nsis", "msi"],
-      "resources": ["xs20-service.exe"],
+      "targets": ["nsis"],
       "icon": [
         "icons/32x32.png",
         "icons/128x128.png",
@@ -43,7 +42,21 @@
         "icons/icon.ico"
       ],
       "resources": {
-        "binaries/xs20-service.exe": "xs20-service.exe"
+        "binaries/xs20-service.exe": "xs20-service.exe",
+        "windows/nssm.exe": "nssm.exe",
+        "windows/install-service.ps1": "install-service.ps1",
+        "windows/uninstall-service.ps1": "uninstall-service.ps1"
+      },
+      "windows": {
+        "webviewInstallMode": {
+          "type": "embedBootstrapper",
+          "silent": true
+        },
+        "nsis": {
+          "installMode": "perMachine",
+          "languages": ["Spanish"],
+          "template": "nsis/installer.nsi"
+        }
       }
     }
   }

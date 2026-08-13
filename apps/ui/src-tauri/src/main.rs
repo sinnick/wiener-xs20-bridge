@@ -56,8 +56,77 @@ fn get_api_token() -> Result<String, String> {
     ))
 }
 
+/// Windows: `canonicalize` devuelve paths con prefijo verbatim (`\\?\C:\...`)
+/// que cmd.exe no siempre digiere. Lo sacamos antes de pasarlo a `start`.
+fn strip_verbatim(p: &std::path::Path) -> String {
+    let s = p.to_string_lossy();
+    s.strip_prefix(r"\\?\").unwrap_or(&s).to_string()
+}
+
+/// Lanza el instalador descargado por el servicio (en <dataDir>/updates) y
+/// cierra la app para que pueda reemplazar sus binarios.
+///
+/// Seguridad: NUNCA ejecutamos un path arbitrario del frontend — tiene que
+/// canonicalizar dentro de <dataDir>/updates y ser un .exe.
+#[tauri::command]
+fn run_installer(
+    path: String,
+    app: tauri::AppHandle,
+    state: State<ServiceProcess>,
+) -> Result<(), String> {
+    if !cfg!(target_os = "windows") {
+        return Err("Solo disponible en Windows".to_string());
+    }
+
+    let updates_dir = fs::canonicalize(data_dir().join("updates"))
+        .map_err(|e| format!("No existe la carpeta de updates: {}", e))?;
+    let installer = fs::canonicalize(PathBuf::from(&path))
+        .map_err(|e| format!("No existe el instalador: {}", e))?;
+    if !installer.starts_with(&updates_dir) {
+        return Err("El instalador esta fuera de la carpeta de updates".to_string());
+    }
+    if installer.extension().and_then(|e| e.to_str()) != Some("exe") {
+        return Err("El instalador debe ser un .exe".to_string());
+    }
+
+    // `cmd /C start` usa ShellExecute, que dispara el pedido de elevacion UAC
+    // del instalador NSIS (perMachine). Spawnear el .exe directo falla con
+    // ERROR_ELEVATION_REQUIRED (740).
+    Command::new("cmd")
+        .args(["/C", "start", "", &strip_verbatim(&installer)])
+        .spawn()
+        .map_err(|e| format!("No se pudo lanzar el instalador: {}", e))?;
+
+    // Si el servicio es hijo nuestro lo matamos aca (el instalador ademas
+    // detiene el servicio de Windows por su cuenta). Despues cerramos la app
+    // con una pequena espera para que el `start` quede firme.
+    if let Some(mut child) = state.0.lock().unwrap().take() {
+        let _ = child.kill();
+    }
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(300));
+        app.exit(0);
+    });
+    Ok(())
+}
+
+/// True si algo ya escucha en el puerto HTTP del servicio (instalado como
+/// servicio de Windows, o lanzado a mano). En ese caso no hay que spawnearlo.
+fn service_already_running() -> bool {
+    std::net::TcpStream::connect_timeout(
+        &"127.0.0.1:7700".parse().unwrap(),
+        Duration::from_millis(400),
+    )
+    .is_ok()
+}
+
 /// Lanza el servicio si el binario existe junto al ejecutable de la app.
 fn spawn_service(app: &tauri::AppHandle) -> Option<Child> {
+    if service_already_running() {
+        eprintln!("xs20-service ya esta corriendo en el puerto 7700; no se lanza otro.");
+        return None;
+    }
+
     let exe_name = if cfg!(target_os = "windows") {
         "xs20-service.exe"
     } else {
@@ -113,7 +182,7 @@ fn main() {
                 }
             }
         })
-        .invoke_handler(tauri::generate_handler![get_api_token])
+        .invoke_handler(tauri::generate_handler![get_api_token, run_installer])
         .run(tauri::generate_context!())
         .expect("error al arrancar Tauri");
 }
