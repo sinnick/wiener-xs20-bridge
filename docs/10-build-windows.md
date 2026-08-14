@@ -99,8 +99,10 @@ bun install
 #    cargo install tauri-cli --version "^1.6"
 
 # 3. Compilar el servicio a .exe (lo necesita la app para lanzarlo)
+#    Target "baseline": sin AVX2, para que corra en CPUs viejas (pre-2013) y
+#    bajo la emulacion x64 de Windows-on-ARM.
 cd apps\service
-bun build src\main.ts --compile --target=bun-windows-x64 --outfile dist\xs20-service.exe
+bun build src\main.ts --compile --target=bun-windows-x64-baseline --outfile dist\xs20-service.exe
 cd ..\..
 
 # 4. Compilar la app de escritorio (esto genera el instalador)
