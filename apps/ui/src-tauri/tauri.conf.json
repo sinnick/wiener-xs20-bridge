@@ -42,10 +42,10 @@
         "icons/icon.ico"
       ],
       "resources": {
-        "binaries/xs20-service.exe": "xs20-service.exe",
-        "windows/nssm.exe": "nssm.exe",
-        "windows/install-service.ps1": "install-service.ps1",
-        "windows/uninstall-service.ps1": "uninstall-service.ps1"
+        "binaries/xs20-service.exe": ".",
+        "windows/nssm.exe": ".",
+        "windows/install-service.ps1": ".",
+        "windows/uninstall-service.ps1": "."
       },
       "windows": {
         "webviewInstallMode": {

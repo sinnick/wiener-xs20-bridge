@@ -143,7 +143,9 @@ fn spawn_service(app: &tauri::AppHandle) -> Option<Child> {
         candidates.push(resource_dir.join(exe_name));
     }
 
-    let exe_path = match candidates.into_iter().find(|p| p.exists()) {
+    // is_file y no exists: en Tauri v1 un resource mal mapeado puede terminar
+    // como carpeta con el mismo nombre, y un directorio no se puede spawnear.
+    let exe_path = match candidates.into_iter().find(|p| p.is_file()) {
         Some(p) => p,
         None => {
             eprintln!("xs20-service no encontrado junto a la app. Se asume que corre aparte.");
