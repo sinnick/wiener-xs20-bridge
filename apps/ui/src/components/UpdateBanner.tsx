@@ -8,14 +8,36 @@
  * vuelve a avisar de esa version puntual (persistido en el servicio).
  */
 
-import { useState } from "react";
-import { AlertCircle, Download, RefreshCw, Rocket } from "lucide-react";
+import { useEffect, useState } from "react";
+import { AlertCircle, Download, Loader2, RefreshCw, Rocket } from "lucide-react";
 
 import type { UseUpdateStatus } from "../hooks/useUpdateStatus";
 
+/** Que accion esta en curso. Sirve para no permitir un doble click. */
+type Busy = "download" | "install" | "skip" | null;
+
 export function UpdateBanner({ update }: { update: UseUpdateStatus }) {
   const [confirming, setConfirming] = useState(false);
-  const { status, dismissed } = update;
+  const [busy, setBusy] = useState<Busy>(null);
+  const { status, dismissed, actionError } = update;
+
+  // Si la accion fallo, volvemos a habilitar los botones. Si salio bien la app
+  // ya se esta cerrando (instalar) o el phase cambio (descargar), asi que el
+  // boton desaparece solo.
+  useEffect(() => {
+    if (actionError) setBusy(null);
+  }, [actionError]);
+
+  const run = (kind: Exclude<Busy, null>, fn: () => Promise<void>) => () => {
+    if (busy !== null) return;
+    setBusy(kind);
+    void fn().finally(() => {
+      // "install" queda deshabilitado a proposito: entre que resuelve y que la
+      // ventana se cierra hay un rato en el que un segundo click lanzaria otro
+      // instalador.
+      if (kind !== "install") setBusy(null);
+    });
+  };
 
   if (!status || dismissed) return null;
   const { phase } = status;
@@ -28,13 +50,23 @@ export function UpdateBanner({ update }: { update: UseUpdateStatus }) {
           icon={<Download className="h-4 w-4" strokeWidth={1.5} />}
           text={`Hay una nueva versión disponible (v${status.latestVersion})`}
         >
-          <PrimaryButton onClick={() => void update.download()}>Descargar</PrimaryButton>
-          <GhostButton onClick={update.dismiss}>Más tarde</GhostButton>
-          <button
-            onClick={() => void update.skip()}
-            className="text-xs text-text-muted underline-offset-2 hover:underline"
+          <PrimaryButton
+            onClick={run("download", update.download)}
+            loading={busy === "download"}
+            loadingLabel="Iniciando descarga…"
+            disabled={busy !== null}
           >
-            Omitir esta versión
+            Descargar
+          </PrimaryButton>
+          <GhostButton onClick={update.dismiss} disabled={busy !== null}>
+            Más tarde
+          </GhostButton>
+          <button
+            onClick={run("skip", update.skip)}
+            disabled={busy !== null}
+            className="text-xs text-text-muted underline-offset-2 hover:underline disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            {busy === "skip" ? "Omitiendo…" : "Omitir esta versión"}
           </button>
           {update.actionError && <ErrorText msg={update.actionError} />}
         </BannerRow>
@@ -65,13 +97,27 @@ export function UpdateBanner({ update }: { update: UseUpdateStatus }) {
         </BannerRow>
       )}
 
+
       {phase === "downloaded" && confirming && (
         <BannerRow
           icon={<Rocket className="h-4 w-4" strokeWidth={1.5} />}
-          text="La aplicación se va a cerrar para instalar la actualización. El servicio se reinicia solo."
+          text={
+            busy === "install"
+              ? "Instalando la actualización. La ventana se va a cerrar sola en unos segundos; no la cierres vos."
+              : "La aplicación se va a cerrar para instalar la actualización. El servicio se reinicia solo."
+          }
         >
-          <PrimaryButton onClick={() => void update.install()}>Sí, instalar</PrimaryButton>
-          <GhostButton onClick={() => setConfirming(false)}>Cancelar</GhostButton>
+          <PrimaryButton
+            onClick={run("install", update.install)}
+            loading={busy === "install"}
+            loadingLabel="Instalando…"
+            disabled={busy !== null}
+          >
+            Sí, instalar
+          </PrimaryButton>
+          <GhostButton onClick={() => setConfirming(false)} disabled={busy !== null}>
+            Cancelar
+          </GhostButton>
           {update.actionError && <ErrorText msg={update.actionError} />}
         </BannerRow>
       )}
@@ -81,11 +127,18 @@ export function UpdateBanner({ update }: { update: UseUpdateStatus }) {
           icon={<AlertCircle className="h-4 w-4 text-high-text" strokeWidth={1.5} />}
           text={`No se pudo descargar la actualización: ${status.download?.error ?? "error desconocido"}`}
         >
-          <PrimaryButton onClick={() => void update.download()}>
-            <RefreshCw className="mr-1 inline h-3.5 w-3.5" strokeWidth={2} />
+          <PrimaryButton
+            onClick={run("download", update.download)}
+            loading={busy === "download"}
+            loadingLabel="Reintentando…"
+            disabled={busy !== null}
+          >
+            <RefreshCw className="mr-1 inline h-3.5 w-3.5" strokeWidth={2} aria-hidden="true" />
             Reintentar
           </PrimaryButton>
-          <GhostButton onClick={update.dismiss}>Más tarde</GhostButton>
+          <GhostButton onClick={update.dismiss} disabled={busy !== null}>
+            Más tarde
+          </GhostButton>
         </BannerRow>
       )}
     </div>
@@ -115,16 +168,26 @@ function BannerRow({
 function PrimaryButton({
   onClick,
   children,
+  disabled = false,
+  loading = false,
+  loadingLabel,
 }: {
   onClick: () => void;
   children: React.ReactNode;
+  disabled?: boolean;
+  loading?: boolean;
+  /** Que decir mientras la accion esta en curso (si no, se deja el label). */
+  loadingLabel?: string;
 }) {
   return (
     <button
       onClick={onClick}
-      className="rounded-sm bg-accent px-3 py-1.5 text-xs font-medium text-surface hover:bg-accent-hover"
+      disabled={disabled || loading}
+      aria-busy={loading || undefined}
+      className="inline-flex items-center gap-1.5 rounded-sm bg-accent px-3 py-1.5 text-xs font-medium text-surface hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50"
     >
-      {children}
+      {loading && <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={2} aria-hidden="true" />}
+      {loading && loadingLabel ? loadingLabel : children}
     </button>
   );
 }
@@ -132,14 +195,17 @@ function PrimaryButton({
 function GhostButton({
   onClick,
   children,
+  disabled = false,
 }: {
   onClick: () => void;
   children: React.ReactNode;
+  disabled?: boolean;
 }) {
   return (
     <button
       onClick={onClick}
-      className="rounded-sm px-3 py-1.5 text-xs text-text-muted hover:bg-border/30 hover:text-text"
+      disabled={disabled}
+      className="rounded-sm px-3 py-1.5 text-xs text-text-muted hover:bg-border/30 hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
     >
       {children}
     </button>

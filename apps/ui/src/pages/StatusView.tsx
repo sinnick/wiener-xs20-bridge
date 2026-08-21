@@ -1,8 +1,14 @@
 /**
  * Estado del servicio: health, conexion TCP, DB, y configuracion editable.
+ *
+ * El health ya no se consulta aca: vive en useServiceStatus() para que el
+ * sidebar (y cualquier otra pantalla) puedan mostrarlo. Aca ademas se
+ * distingue "dato de ahora" de "ultimo dato conocido hace un rato", que era
+ * justamente el bug: la unica pantalla cuyo trabajo es decir "esto esta vivo"
+ * decia "En línea" para siempre.
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import {
   Activity,
   Database,
@@ -10,190 +16,258 @@ import {
   Settings,
   Check,
   AlertCircle,
+  FolderOpen,
+  FolderSearch,
   RefreshCw,
 } from "lucide-react";
 
 import {
-  getHealth,
   getConfig,
   updateConfig,
   getUpdateStatus,
   checkForUpdates,
   apiErrorMessage,
+  isConnectionError,
   type ConnectionMode,
   type HealthResponse,
   type ServiceConfig,
   type UpdateConfigRequest,
   type UpdateStatusResponse,
 } from "../lib/api";
-import { Dot } from "../components/primitives";
+import { canOpenPath, canPickDirectory, openPath, pickDirectory } from "../lib/tauri";
+import { formatAgo, useServiceStatus } from "../hooks/useServiceStatus";
+import { ConnectingState, Dot, ErrorState, Spinner } from "../components/primitives";
 
 export function StatusView() {
-  const [health, setHealth] = useState<HealthResponse | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let active = true;
-    const poll = () => {
-      getHealth()
-        .then((h) => active && setHealth(h))
-        .catch((e) => active && setError(apiErrorMessage(e)));
-    };
-    poll();
-    const timer = setInterval(poll, 3000);
-    return () => {
-      active = false;
-      clearInterval(timer);
-    };
-  }, []);
+  const status = useServiceStatus();
+  const { health, phase, stale, staleMs, error } = status;
 
   return (
     <div className="flex h-full flex-col">
-      <header className="border-b border-border px-8 py-6">
-        <h1 className="text-2xl font-medium text-text-strong">Estado del servicio</h1>
-        <p className="mt-1 text-sm text-text-muted">Se actualiza cada 3 segundos</p>
+      <header className="flex flex-wrap items-start justify-between gap-4 border-b border-border px-8 py-6">
+        <div>
+          <h1 className="text-2xl font-medium text-text-strong">Estado del servicio</h1>
+          {/* Esta linea es la que tiene que decir SIEMPRE la verdad sobre la
+              frescura del dato: es el bug que la pantalla tenia. */}
+          <p className="mt-1 inline-flex items-center gap-2 text-sm" role="status" aria-live="polite">
+            {phase === "booting" ? (
+              <span className="inline-flex items-center gap-2 text-text-muted">
+                <Spinner className="h-3.5 w-3.5" />
+                Conectando con el servicio…
+              </span>
+            ) : phase === "offline" ? (
+              <span className="inline-flex items-center gap-2 text-high-text">
+                <Dot className="bg-high-text" />
+                Sin contacto con el servicio ·{" "}
+                {staleMs !== null
+                  ? `último dato conocido ${formatAgo(staleMs)}`
+                  : "nunca respondió"}
+              </span>
+            ) : stale ? (
+              <span className="inline-flex items-center gap-2 text-warn-text">
+                <Spinner className="h-3.5 w-3.5" />
+                Reintentando ·{" "}
+                {staleMs !== null ? `último dato ${formatAgo(staleMs)}` : "sin datos"}
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-2 text-text-muted">
+                <Dot className="bg-normal-text" />
+                Al día · se actualiza cada 3 segundos
+              </span>
+            )}
+          </p>
+        </div>
+        <button
+          onClick={status.refresh}
+          className="inline-flex h-9 items-center gap-2 rounded-full border border-border bg-surface px-4 text-sm hover:bg-accent-soft"
+        >
+          <RefreshCw className="h-4 w-4 text-text-muted" strokeWidth={1.5} aria-hidden="true" />
+          Actualizar ahora
+        </button>
       </header>
 
       <div className="flex-1 overflow-auto px-8 py-6">
-        {error && !health && (
-          <div className="rounded-lg border border-high-text/20 bg-high-bg/40 p-4 text-high-text">
-            No se pudo contactar el servicio: {error}
-          </div>
+        {/* Arranque: el servicio puede tardar en levantar, y un primer intento
+            fallido no es todavia una noticia. Recien cuando se declara offline
+            mostramos el error. */}
+        {phase === "booting" && !health && <ConnectingState />}
+
+        {phase === "offline" && !health && (
+          <ErrorState
+            title="No se pudo contactar el servicio"
+            message={error ?? "No responde"}
+            hint="Verificá que el servicio esté corriendo en el puerto 7700."
+            onRetry={status.refresh}
+          />
         )}
 
         {health && (
-          <div className="grid max-w-4xl gap-4 md:grid-cols-2">
-            {/* Estado general */}
-            <Card icon={<Activity className="h-5 w-5" strokeWidth={1.5} />} title="General">
-              <Row label="Estado">
-                <span className="inline-flex items-center gap-2">
-                  <Dot className={health.status === "ok" ? "bg-normal-text" : "bg-high-text"} />
-                  <span className="capitalize">{health.status === "ok" ? "En línea" : health.status}</span>
-                </span>
-              </Row>
-              <Row label="Versión">
-                <span className="font-mono tnum">{health.version}</span>
-              </Row>
-              <Row label="Uptime">
-                <span className="font-mono tnum">{formatUptime(health.uptime)}</span>
-              </Row>
-            </Card>
+          <div className="max-w-4xl">
+            {phase === "offline" && (
+              <div
+                role="alert"
+                className="mb-4 rounded-lg border border-high-text/20 bg-high-bg/40 p-4 text-sm text-high-text"
+              >
+                <strong>El servicio no responde.</strong> Lo que ves abajo es el último
+                dato conocido, de {staleMs !== null ? formatAgo(staleMs) : "hace un rato"}
+                {error ? ` (${error})` : ""}. Mientras tanto los resultados que mande el
+                analizador no se están guardando.
+              </div>
+            )}
 
-            {/* Conexion con el equipo */}
-            <Card icon={<Radio className="h-5 w-5" strokeWidth={1.5} />} title="Conexión con el analizador">
-              <Row label="Modo">
-                <span className="text-sm">
-                  {health.connectionMode === "connect"
-                    ? "Nos conectamos al equipo"
-                    : "El equipo se conecta a nosotros"}
-                </span>
-              </Row>
+            <div
+              className={`grid gap-4 md:grid-cols-2 ${phase === "offline" ? "opacity-60" : ""}`}
+            >
+              {/* Estado general */}
+              <Card icon={<Activity className="h-5 w-5" strokeWidth={1.5} />} title="General">
+                <Row label="Estado">
+                  <span className="inline-flex items-center gap-2">
+                    <Dot className={generalDotClass(health, phase)} />
+                    <span>{generalLabel(health, phase)}</span>
+                  </span>
+                </Row>
+                <Row label="Versión">
+                  <span className="font-mono tnum">{health.version}</span>
+                </Row>
+                <Row label="Uptime">
+                  <span className="font-mono tnum">{formatUptime(health.uptime)}</span>
+                </Row>
+              </Card>
 
-              {health.analyzerClient ? (
-                <>
-                  <Row label="Estado">
-                    <span className="inline-flex items-center gap-2">
-                      <Dot
-                        className={
-                          health.analyzerClient.connected ? "bg-normal-text" : "bg-high-text"
-                        }
-                      />
-                      {health.analyzerClient.connected
-                        ? "Conectado al equipo"
-                        : "Esperando al equipo"}
-                    </span>
-                  </Row>
-                  <Row label="Equipo">
-                    <span className="font-mono tnum">
-                      {health.analyzerClient.address}:{health.analyzerClient.port}
-                    </span>
-                  </Row>
-                  {!health.analyzerClient.connected && health.analyzerClient.lastError && (
-                    <Row label="Último error">
-                      <span className="text-sm text-high-text">
-                        {health.analyzerClient.lastError}
+              {/* Conexion con el equipo */}
+              <Card
+                icon={<Radio className="h-5 w-5" strokeWidth={1.5} />}
+                title="Conexión con el analizador"
+              >
+                <Row label="Modo">
+                  <span className="text-sm">
+                    {health.connectionMode === "connect"
+                      ? "Nos conectamos al equipo"
+                      : "El equipo se conecta a nosotros"}
+                  </span>
+                </Row>
+
+                {health.analyzerClient ? (
+                  <>
+                    <Row label="Estado">
+                      <span className="inline-flex items-center gap-2">
+                        <Dot
+                          className={
+                            health.analyzerClient.connected ? "bg-normal-text" : "bg-high-text"
+                          }
+                        />
+                        {health.analyzerClient.connected
+                          ? "Conectado al equipo"
+                          : "Esperando al equipo"}
                       </span>
                     </Row>
-                  )}
-                  {health.analyzerClient.connectedAt && (
-                    <Row label="Conectado desde">
-                      <span className="font-mono text-sm tnum">
-                        {new Date(health.analyzerClient.connectedAt).toLocaleString("es-AR")}
+                    <Row label="Equipo">
+                      <span className="font-mono tnum">
+                        {health.analyzerClient.address}:{health.analyzerClient.port}
                       </span>
                     </Row>
-                  )}
-                </>
-              ) : (
-                <>
-                  <Row label="Escuchando">
-                    <span className="inline-flex items-center gap-2">
-                      <Dot
-                        className={health.tcpListener.listening ? "bg-normal-text" : "bg-high-text"}
-                      />
-                      {health.tcpListener.listening ? "Sí" : "No"}
-                    </span>
-                  </Row>
-                  <Row label="Dirección">
-                    <span className="font-mono tnum">
-                      {health.tcpListener.address}:{health.tcpListener.port}
-                    </span>
-                  </Row>
-                  <Row label="Conexiones activas">
-                    <span className="font-mono tnum">{health.tcpListener.activeConnections}</span>
-                  </Row>
-                </>
-              )}
+                    {!health.analyzerClient.connected && health.analyzerClient.lastError && (
+                      <Row label="Último error">
+                        <span className="text-sm text-high-text">
+                          {health.analyzerClient.lastError}
+                        </span>
+                      </Row>
+                    )}
+                    {health.analyzerClient.connectedAt && (
+                      <Row label="Conectado desde">
+                        <span className="font-mono text-sm tnum">
+                          {new Date(health.analyzerClient.connectedAt).toLocaleString("es-AR")}
+                        </span>
+                      </Row>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    <Row label="Escuchando">
+                      <span className="inline-flex items-center gap-2">
+                        <Dot
+                          className={health.tcpListener.listening ? "bg-normal-text" : "bg-high-text"}
+                        />
+                        {health.tcpListener.listening ? "Sí" : "No"}
+                      </span>
+                    </Row>
+                    <Row label="Dirección">
+                      <span className="font-mono tnum">
+                        {health.tcpListener.address}:{health.tcpListener.port}
+                      </span>
+                    </Row>
+                    <Row label="Conexiones activas">
+                      <span className="font-mono tnum">{health.tcpListener.activeConnections}</span>
+                    </Row>
+                  </>
+                )}
 
-              <Row label="Reconexiones">
-                <span className="font-mono tnum">
-                  {health.tcpListener.totalConnectionsSinceStart}
-                </span>
-              </Row>
-              <Row label="Último mensaje">
-                <span className="font-mono text-sm tnum">
-                  {health.lastMessageAt
-                    ? new Date(health.lastMessageAt).toLocaleString("es-AR")
-                    : "—"}
-                </span>
-              </Row>
-            </Card>
+                <Row label="Reconexiones">
+                  <span className="font-mono tnum">
+                    {health.tcpListener.totalConnectionsSinceStart}
+                  </span>
+                </Row>
+                <Row label="Último mensaje">
+                  <span className="font-mono text-sm tnum">
+                    {health.lastMessageAt
+                      ? new Date(health.lastMessageAt).toLocaleString("es-AR")
+                      : "—"}
+                  </span>
+                </Row>
+              </Card>
 
-            {/* Base de datos */}
-            <Card icon={<Database className="h-5 w-5" strokeWidth={1.5} />} title="Base de datos">
-              <Row label="Estado">
-                <span className="inline-flex items-center gap-2">
-                  <Dot className={health.database.ok ? "bg-normal-text" : "bg-high-text"} />
-                  {health.database.ok ? "OK" : "No se puede escribir"}
-                </span>
-              </Row>
-              {!health.database.ok && (
-                <p className="rounded-sm border border-high-text/20 bg-high-bg/40 px-3 py-2 text-xs text-high-text">
-                  La base rechaza escrituras: <strong>los resultados que llegue a
-                  mandar el analizador no se van a guardar.</strong> Cerrá la app y
-                  volvé a abrirla; si sigue igual, revisá los permisos de la carpeta{" "}
-                  <span className="font-mono">C:\ProgramData\WienerXS20\db</span>.
-                </p>
-              )}
-              <Row label="Resultados guardados">
-                <span className="font-mono tnum">{health.database.resultCount}</span>
-              </Row>
-              <Row label="Tamaño">
-                <span className="font-mono tnum">{formatBytes(health.database.sizeBytes)}</span>
-              </Row>
-            </Card>
+              {/* Base de datos */}
+              <Card icon={<Database className="h-5 w-5" strokeWidth={1.5} />} title="Base de datos">
+                <Row label="Estado">
+                  <span className="inline-flex items-center gap-2">
+                    <Dot className={health.database.ok ? "bg-normal-text" : "bg-high-text"} />
+                    {health.database.ok ? "OK" : "No se puede escribir"}
+                  </span>
+                </Row>
+                {!health.database.ok && (
+                  <p className="rounded-sm border border-high-text/20 bg-high-bg/40 px-3 py-2 text-xs text-high-text">
+                    La base rechaza escrituras: <strong>los resultados que llegue a
+                    mandar el analizador no se van a guardar.</strong> Cerrá la app y
+                    volvé a abrirla; si sigue igual, revisá los permisos de la carpeta{" "}
+                    <span className="font-mono">C:\ProgramData\WienerXS20\db</span>.
+                  </p>
+                )}
+                <Row label="Resultados guardados">
+                  <span className="font-mono tnum">{health.database.resultCount}</span>
+                </Row>
+                <Row label="Tamaño">
+                  <span className="font-mono tnum">{formatBytes(health.database.sizeBytes)}</span>
+                </Row>
+              </Card>
 
-            {/* Actualizaciones */}
-            <UpdatesCard currentVersion={health.version} />
+              {/* Actualizaciones */}
+              <UpdatesCard currentVersion={health.version} />
 
-            {/* Configuracion editable */}
-            <div className="md:col-span-2">
-              <ConfigCard />
+              {/* Configuracion editable */}
+              <div className="md:col-span-2">
+                <ConfigCard />
+              </div>
             </div>
           </div>
         )}
       </div>
     </div>
   );
+}
+
+/** El health cacheado no manda si perdimos contacto: ahi lo honesto es rojo. */
+function generalDotClass(health: HealthResponse, phase: string): string {
+  if (phase === "offline") return "bg-high-text";
+  if (health.status === "ok") return "bg-normal-text";
+  if (health.status === "degraded") return "bg-warn-text";
+  return "bg-high-text";
+}
+
+function generalLabel(health: HealthResponse, phase: string): string {
+  if (phase === "offline") return "Sin conexión";
+  if (health.status === "ok") return "En línea";
+  if (health.status === "degraded") return "En línea, con problemas";
+  return "Caído";
 }
 
 // ─── Card de actualizaciones ─────────────────────────────────────────────────
@@ -285,14 +359,15 @@ function UpdatesCard({ currentVersion }: { currentVersion: string }) {
             <button
               onClick={() => void onCheckNow()}
               disabled={checking || !status.updateCheckEnabled}
-              className="rounded-sm px-3 py-1.5 text-xs text-text-muted hover:bg-border/30 hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
+              className="inline-flex items-center gap-2 rounded-sm px-3 py-1.5 text-xs text-text-muted hover:bg-border/30 hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
             >
+              {checking && <Spinner className="h-3 w-3" />}
               {checking ? "Buscando…" : "Buscar ahora"}
             </button>
           </div>
           {error && (
             <p className="inline-flex items-center gap-1.5 text-sm text-high-text">
-              <AlertCircle className="h-4 w-4" strokeWidth={2} />
+              <AlertCircle className="h-4 w-4" strokeWidth={2} aria-hidden="true" />
               {error}
             </p>
           )}
@@ -306,7 +381,10 @@ function UpdatesCard({ currentVersion }: { currentVersion: string }) {
 
 function ConfigCard() {
   const [cfg, setCfg] = useState<ServiceConfig | null>(null);
+  const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [loadOffline, setLoadOffline] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
 
   const [mode, setMode] = useState<ConnectionMode>("listen");
   const [analyzerHost, setAnalyzerHost] = useState("");
@@ -320,6 +398,18 @@ function ConfigCard() {
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [folderError, setFolderError] = useState<string | null>(null);
+
+  const ids = {
+    mode: useId(),
+    analyzerHost: useId(),
+    analyzerPort: useId(),
+    tcpHost: useId(),
+    tcpPort: useId(),
+    logLevel: useId(),
+    retention: useId(),
+    exportDir: useId(),
+  };
 
   const applyConfig = (c: ServiceConfig) => {
     setCfg(c);
@@ -334,10 +424,26 @@ function ConfigCard() {
   };
 
   useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setLoadError(null);
+    setLoadOffline(false);
     getConfig()
-      .then(applyConfig)
-      .catch((e) => setLoadError(apiErrorMessage(e)));
-  }, []);
+      .then((c) => {
+        if (!cancelled) applyConfig(c);
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        if (isConnectionError(e)) setLoadOffline(true);
+        else setLoadError(apiErrorMessage(e));
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [reloadKey]);
 
   const dirty =
     cfg !== null &&
@@ -376,11 +482,33 @@ function ConfigCard() {
     }
   };
 
+  const onPickFolder = async () => {
+    setFolderError(null);
+    try {
+      const picked = await pickDirectory(exportDir.trim() || undefined);
+      if (picked) setExportDir(picked);
+    } catch (e) {
+      setFolderError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  const onOpenFolder = async () => {
+    setFolderError(null);
+    if (!cfg?.exportDir) return;
+    try {
+      await openPath(cfg.exportDir);
+    } catch {
+      setFolderError(
+        "No se pudo abrir la carpeta. Puede que ya no exista o que se haya movido.",
+      );
+    }
+  };
+
   return (
     <div className="rounded-lg border border-border bg-surface p-5">
       <div className="mb-1 flex items-center gap-2 text-text-strong">
         <span className="text-text-muted">
-          <Settings className="h-5 w-5" strokeWidth={1.5} />
+          <Settings className="h-5 w-5" strokeWidth={1.5} aria-hidden="true" />
         </span>
         <h2 className="font-medium">Configuración</h2>
       </div>
@@ -388,21 +516,51 @@ function ConfigCard() {
         Los cambios se aplican al instante, sin reiniciar el servicio.
       </p>
 
-      {loadError && (
-        <div className="mb-4 rounded-sm border border-high-text/20 bg-high-bg/40 px-3 py-2 text-sm text-high-text">
-          No se pudo leer la configuración: {loadError}
+      {loading && (
+        <div className="space-y-3" role="status" aria-label="Cargando la configuración">
+          {Array.from({ length: 4 }).map((_, i) => (
+            <div key={i} className="h-16 animate-pulse rounded-sm bg-border/40" />
+          ))}
         </div>
       )}
 
-      {cfg && (
+      {!loading && loadOffline && (
+        <p className="rounded-sm border border-border bg-bg px-3 py-2 text-sm text-text-muted">
+          No se puede leer la configuración mientras el servicio no responda. Se reintenta
+          solo; también podés{" "}
+          <button
+            onClick={() => setReloadKey((k) => k + 1)}
+            className="text-accent underline underline-offset-2"
+          >
+            probar de nuevo
+          </button>
+          .
+        </p>
+      )}
+
+      {!loading && !loadOffline && loadError && (
+        <div className="rounded-sm border border-high-text/20 bg-high-bg/40 px-3 py-2 text-sm text-high-text">
+          No se pudo leer la configuración: {loadError}{" "}
+          <button
+            onClick={() => setReloadKey((k) => k + 1)}
+            className="underline underline-offset-2"
+          >
+            Reintentar
+          </button>
+        </div>
+      )}
+
+      {!loading && cfg && (
         <>
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="sm:col-span-2">
               <Field
+                htmlFor={ids.mode}
                 label="¿Quién inicia la conexión?"
                 hint="Tiene que coincidir con la configuración de LIS del analizador. Si no estás seguro, probá 'Nos conectamos al equipo' y mirá el estado arriba."
               >
                 <select
+                  id={ids.mode}
                   value={mode}
                   onChange={(e) => setMode(e.target.value as ConnectionMode)}
                   className={inputClass}
@@ -420,10 +578,12 @@ function ConfigCard() {
             {mode === "connect" ? (
               <>
                 <Field
+                  htmlFor={ids.analyzerHost}
                   label="IP del analizador"
                   hint="La dirección del XS 20 en la red del laboratorio."
                 >
                   <input
+                    id={ids.analyzerHost}
                     type="text"
                     value={analyzerHost}
                     spellCheck={false}
@@ -433,8 +593,13 @@ function ConfigCard() {
                   />
                 </Field>
 
-                <Field label="Puerto del analizador" hint="En el XS 20 suele ser 5100.">
+                <Field
+                  htmlFor={ids.analyzerPort}
+                  label="Puerto del analizador"
+                  hint="En el XS 20 suele ser 5100."
+                >
                   <input
+                    id={ids.analyzerPort}
                     type="number"
                     min={1}
                     max={65535}
@@ -448,10 +613,12 @@ function ConfigCard() {
             ) : (
               <>
                 <Field
+                  htmlFor={ids.tcpHost}
                   label="IP a escuchar"
                   hint="Interfaz donde el analizador se conecta. 0.0.0.0 = todas."
                 >
                   <input
+                    id={ids.tcpHost}
                     type="text"
                     value={tcpHost}
                     spellCheck={false}
@@ -461,8 +628,13 @@ function ConfigCard() {
                   />
                 </Field>
 
-                <Field label="Puerto TCP" hint="Puerto donde escucha al XS 20.">
+                <Field
+                  htmlFor={ids.tcpPort}
+                  label="Puerto TCP"
+                  hint="Puerto donde escucha al XS 20."
+                >
                   <input
+                    id={ids.tcpPort}
                     type="number"
                     min={1}
                     max={65535}
@@ -475,8 +647,9 @@ function ConfigCard() {
               </>
             )}
 
-            <Field label="Nivel de log">
+            <Field htmlFor={ids.logLevel} label="Nivel de log">
               <select
+                id={ids.logLevel}
                 value={logLevel}
                 onChange={(e) => setLogLevel(e.target.value as ServiceConfig["logLevel"])}
                 className={inputClass}
@@ -488,8 +661,13 @@ function ConfigCard() {
               </select>
             </Field>
 
-            <Field label="Retención de HL7 crudo (días)" hint="0 = no purgar nunca.">
+            <Field
+              htmlFor={ids.retention}
+              label="Retención de HL7 crudo (días)"
+              hint="0 = no purgar nunca."
+            >
               <input
+                id={ids.retention}
                 type="number"
                 min={0}
                 max={3650}
@@ -501,19 +679,15 @@ function ConfigCard() {
             </Field>
 
             <div className="sm:col-span-2">
-              <Field
-                label="Carpeta de exportación de .txt"
-                hint="Por cada resultado recibido se escribe un <muestra>.txt ahí. Vacío = no exportar."
-              >
-                <input
-                  type="text"
-                  value={exportDir}
-                  spellCheck={false}
-                  onChange={(e) => setExportDir(e.target.value)}
-                  placeholder="C:\Users\Laboratorio\Documents\Hemogramas"
-                  className={inputClass}
-                />
-              </Field>
+              <ExportDirField
+                id={ids.exportDir}
+                value={exportDir}
+                savedValue={cfg.exportDir}
+                onChange={setExportDir}
+                onPick={() => void onPickFolder()}
+                onOpen={() => void onOpenFolder()}
+                error={folderError}
+              />
             </div>
           </div>
 
@@ -526,20 +700,21 @@ function ConfigCard() {
             <button
               onClick={onSave}
               disabled={!dirty || saving}
-              className="rounded-sm bg-accent px-4 py-2 text-sm font-medium text-surface hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-40"
+              className="inline-flex items-center gap-2 rounded-sm bg-accent px-4 py-2 text-sm font-medium text-surface hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-40"
             >
+              {saving && <Spinner className="h-4 w-4 text-surface" />}
               {saving ? "Guardando…" : "Guardar cambios"}
             </button>
 
             {saved && (
               <span className="inline-flex items-center gap-1.5 text-sm text-normal-text">
-                <Check className="h-4 w-4" strokeWidth={2} />
+                <Check className="h-4 w-4" strokeWidth={2} aria-hidden="true" />
                 Guardado
               </span>
             )}
             {saveError && (
               <span className="inline-flex items-center gap-1.5 text-sm text-high-text">
-                <AlertCircle className="h-4 w-4" strokeWidth={2} />
+                <AlertCircle className="h-4 w-4" strokeWidth={2} aria-hidden="true" />
                 {saveError}
               </span>
             )}
@@ -550,24 +725,136 @@ function ConfigCard() {
   );
 }
 
+// ─── Carpeta de exportacion ──────────────────────────────────────────────────
+//
+// Es LA funcion que le importa al laboratorio y antes dependia de que alguien
+// tipeara una ruta de Windows sin errores. Ahora: selector nativo, boton para
+// abrirla en el explorador, y aviso si la ruta escrita a mano no parece
+// absoluta.
+
+function ExportDirField({
+  id,
+  value,
+  savedValue,
+  onChange,
+  onPick,
+  onOpen,
+  error,
+}: {
+  id: string;
+  value: string;
+  savedValue: string;
+  onChange: (v: string) => void;
+  onPick: () => void;
+  onOpen: () => void;
+  error: string | null;
+}) {
+  const trimmed = value.trim();
+  const unsavedChange = trimmed !== savedValue;
+  const looksAbsolute =
+    trimmed === "" || /^([A-Za-z]:[\\/]|\\\\|\/)/.test(trimmed);
+
+  return (
+    <Field
+      htmlFor={id}
+      label="Carpeta de exportación de .txt"
+      hint="Por cada resultado recibido se escribe un <muestra>.txt ahí."
+    >
+      <div className="flex flex-wrap gap-2">
+        <input
+          id={id}
+          type="text"
+          value={value}
+          spellCheck={false}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder="C:\Users\Laboratorio\Documents\Hemogramas"
+          aria-describedby={`${id}-estado`}
+          className={`${inputClass} min-w-0 flex-1`}
+        />
+        {canPickDirectory() && (
+          <button
+            type="button"
+            onClick={onPick}
+            className="inline-flex shrink-0 items-center gap-2 rounded-sm border border-border bg-surface px-3 py-2 text-sm text-text hover:bg-accent-soft"
+          >
+            <FolderSearch className="h-4 w-4 text-text-muted" strokeWidth={1.5} aria-hidden="true" />
+            Elegir carpeta…
+          </button>
+        )}
+        {canOpenPath() && savedValue !== "" && (
+          <button
+            type="button"
+            onClick={onOpen}
+            disabled={unsavedChange}
+            title={
+              unsavedChange ? "Guardá los cambios para abrir la carpeta nueva" : undefined
+            }
+            className="inline-flex shrink-0 items-center gap-2 rounded-sm border border-border bg-surface px-3 py-2 text-sm text-text hover:bg-accent-soft disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            <FolderOpen className="h-4 w-4 text-text-muted" strokeWidth={1.5} aria-hidden="true" />
+            Abrir carpeta
+          </button>
+        )}
+      </div>
+
+      <span id={`${id}-estado`} className="mt-1.5 block text-xs">
+        {trimmed === "" ? (
+          <span className="text-warn-text">
+            Vacío: <strong>no se está exportando ningún .txt.</strong> Elegí una carpeta
+            para que cada muestra se guarde también como archivo.
+          </span>
+        ) : !looksAbsolute ? (
+          <span className="text-warn-text">
+            Eso no parece una carpeta completa. Tiene que empezar con la unidad, por
+            ejemplo <span className="font-mono">C:\Users\…</span>. Mejor usá “Elegir
+            carpeta…”.
+          </span>
+        ) : unsavedChange ? (
+          <span className="text-text-muted">
+            Sin guardar. Se va a exportar acá cuando toques “Guardar cambios”.
+          </span>
+        ) : (
+          <span className="text-normal-text">
+            Cada muestra que llegue se guarda también en esta carpeta.
+          </span>
+        )}
+      </span>
+
+      {error && (
+        <span className="mt-1.5 inline-flex items-center gap-1.5 text-xs text-high-text">
+          <AlertCircle className="h-3.5 w-3.5" strokeWidth={2} aria-hidden="true" />
+          {error}
+        </span>
+      )}
+    </Field>
+  );
+}
+
 const inputClass =
   "w-full rounded-sm border border-border bg-surface px-3 py-2 text-sm text-text placeholder:text-text-muted focus:border-accent focus:outline-none";
 
 function Field({
+  htmlFor,
   label,
   hint,
   children,
 }: {
+  htmlFor?: string;
   label: string;
   hint?: string;
   children: React.ReactNode;
 }) {
   return (
-    <label className="block">
-      <span className="mb-1.5 block text-sm font-medium text-text-strong">{label}</span>
+    <div className="block">
+      <label
+        htmlFor={htmlFor}
+        className="mb-1.5 block text-sm font-medium text-text-strong"
+      >
+        {label}
+      </label>
       {children}
       {hint && <span className="mt-1 block text-xs text-text-muted">{hint}</span>}
-    </label>
+    </div>
   );
 }
 
@@ -575,7 +862,9 @@ function Card({ icon, title, children }: { icon: React.ReactNode; title: string;
   return (
     <div className="rounded-lg border border-border bg-surface p-5">
       <div className="mb-4 flex items-center gap-2 text-text-strong">
-        <span className="text-text-muted">{icon}</span>
+        <span className="text-text-muted" aria-hidden="true">
+          {icon}
+        </span>
         <h2 className="font-medium">{title}</h2>
       </div>
       <dl className="space-y-2.5">{children}</dl>

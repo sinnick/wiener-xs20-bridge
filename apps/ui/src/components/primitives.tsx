@@ -2,6 +2,8 @@
  * Primitivas chicas reutilizables de la UI.
  */
 
+import { AlertTriangle, Loader2, PlugZap, RefreshCw } from "lucide-react";
+
 import type { AbnormalFlag } from "@xs20/shared";
 
 // ─── Chip de flag de anormalidad ─────────────────────────────────────────────
@@ -98,4 +100,78 @@ export function formatTime(iso: string | Date): string {
     minute: "2-digit",
     second: "2-digit",
   });
+}
+
+// ─── Estados de pantalla compartidos ─────────────────────────────────────────
+//
+// Las cuatro vistas tienen que contar la misma historia con las mismas
+// palabras. Antes cada una improvisaba: Resultados tenia un estado de error
+// cuidado y Detalle un <p> pelado.
+
+export function Spinner({ className = "h-5 w-5" }: { className?: string }) {
+  return (
+    <Loader2
+      className={`animate-spin text-text-muted ${className}`}
+      strokeWidth={1.5}
+      aria-hidden="true"
+    />
+  );
+}
+
+/** "No pudimos hablar con el servicio". Distinto de un error de datos. */
+export function ConnectingState({
+  message = "Conectando con el servicio…",
+  detail,
+}: {
+  message?: string;
+  detail?: string;
+}) {
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      className="flex flex-col items-center justify-center py-24 text-center"
+    >
+      <PlugZap className="h-12 w-12 text-text-muted" strokeWidth={1.25} aria-hidden="true" />
+      <p className="mt-4 inline-flex items-center gap-2 text-lg text-text-strong">
+        <Spinner className="h-4 w-4" />
+        {message}
+      </p>
+      <p className="mt-1 max-w-sm text-sm text-text-muted">
+        {detail ??
+          "El servicio puede tardar unos segundos en arrancar. Si no aparece nada en un minuto, cerrá y abrí la aplicación."}
+      </p>
+    </div>
+  );
+}
+
+/** Error de datos: el servicio contesto, pero con un problema. */
+export function ErrorState({
+  title = "No se pudo cargar",
+  message,
+  hint,
+  onRetry,
+}: {
+  title?: string;
+  message: string;
+  hint?: string;
+  onRetry?: () => void;
+}) {
+  return (
+    <div role="alert" className="flex flex-col items-center justify-center py-24 text-center">
+      <AlertTriangle className="h-12 w-12 text-high-text" strokeWidth={1.25} aria-hidden="true" />
+      <p className="mt-4 text-lg text-text-strong">{title}</p>
+      <p className="mt-1 max-w-sm text-sm text-text-muted">{message}</p>
+      {hint && <p className="mt-1 max-w-sm text-sm text-text-muted">{hint}</p>}
+      {onRetry && (
+        <button
+          onClick={onRetry}
+          className="mt-5 inline-flex items-center gap-2 rounded-sm bg-accent px-4 py-2 text-sm font-medium text-surface hover:bg-accent-hover"
+        >
+          <RefreshCw className="h-4 w-4" strokeWidth={2} aria-hidden="true" />
+          Reintentar
+        </button>
+      )}
+    </div>
+  );
 }

@@ -55,23 +55,64 @@ export function isTauri(): boolean {
   return getTauriInvoke() !== undefined;
 }
 
-export async function initToken(): Promise<void> {
+/** Le pide el token al host (Tauri) o, en dev, al localStorage. */
+async function loadTokenFromHost(): Promise<string> {
   const tauriInvoke = getTauriInvoke();
 
   if (tauriInvoke) {
     try {
-      cachedToken = (await tauriInvoke("get_api_token")) as string;
-      return;
+      const t = (await tauriInvoke("get_api_token")) as string;
+      if (typeof t === "string" && t.trim() !== "") return t.trim();
     } catch {
       // cae al localStorage
     }
   }
-  cachedToken = localStorage.getItem("xs20_token") ?? "";
+  return localStorage.getItem("xs20_token") ?? "";
+}
+
+let initPromise: Promise<void> | null = null;
+let refreshPromise: Promise<string> | null = null;
+
+export function initToken(): Promise<void> {
+  if (!initPromise) {
+    initPromise = loadTokenFromHost().then((t) => {
+      cachedToken = t;
+    });
+  }
+  return initPromise;
+}
+
+/** True si ya tenemos un token no vacio. */
+export function hasToken(): boolean {
+  return (cachedToken ?? "") !== "";
+}
+
+/**
+ * Vuelve a preguntarle el token al host. Se usa cuando el servicio contesta
+ * 401: el caso tipico es que la app arranco antes que el servicio y el
+ * `api-token.txt` todavia no existia. Sin esto la app queda en 401 permanente
+ * hasta reiniciarla.
+ *
+ * Las llamadas concurrentes comparten la misma promesa para no disparar N
+ * invokes a Tauri (cada uno puede bloquear varios segundos).
+ */
+export function refreshToken(): Promise<string> {
+  if (!refreshPromise) {
+    refreshPromise = loadTokenFromHost()
+      .then((t) => {
+        cachedToken = t;
+        return t;
+      })
+      .finally(() => {
+        refreshPromise = null;
+      });
+  }
+  return refreshPromise;
 }
 
 // El token: en dev lo podes setear en la consola con
 //   localStorage.setItem("xs20_token", "el-token")
-function getToken(): string {
+export function getToken(): string {
   if (cachedToken !== null) return cachedToken;
   return localStorage.getItem("xs20_token") ?? "";
 }
@@ -80,12 +121,29 @@ export function setToken(token: string): void {
   localStorage.setItem("xs20_token", token);
 }
 
+/**
+ * fetch con el token puesto. Ante un 401 vuelve a pedirle el token al host y
+ * reintenta UNA sola vez (nunca entra en loop).
+ */
+async function authedFetch(path: string, init: RequestInit = {}): Promise<Response> {
+  const send = () =>
+    fetch(`${BASE}${path}`, {
+      ...init,
+      headers: {
+        ...((init.headers as Record<string, string> | undefined) ?? {}),
+        "X-XS20-Token": getToken(),
+      },
+    });
+
+  const res = await send();
+  if (res.status !== 401) return res;
+
+  await refreshToken();
+  return send();
+}
+
 async function apiGet<T>(path: string): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
-    headers: {
-      "X-XS20-Token": getToken(),
-    },
-  });
+  const res = await authedFetch(path);
   if (!res.ok) {
     const body = await res.text();
     throw new ApiError(res.status, body);
@@ -94,12 +152,9 @@ async function apiGet<T>(path: string): Promise<T> {
 }
 
 async function apiPost<T>(path: string, body?: unknown): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
+  const res = await authedFetch(path, {
     method: "POST",
-    headers: {
-      "X-XS20-Token": getToken(),
-      ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
-    },
+    headers: body !== undefined ? { "Content-Type": "application/json" } : {},
     ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
   });
   if (!res.ok) {
@@ -116,6 +171,23 @@ export class ApiError extends Error {
     super(`HTTP ${status}`);
     this.name = "ApiError";
   }
+}
+
+/**
+ * True si el error es "no pudimos hablar con el servicio" y no "el servicio
+ * nos contesto que los datos estan mal".
+ *
+ * Un 401 entra aca a proposito: significa que todavia no tenemos (o perdimos)
+ * el token del servicio, que es un problema de arranque/conexion. Mostrarlo
+ * como error de datos confunde, porque /api/health no pide token y entonces la
+ * vista Estado dice "En línea" mientras Resultados falla.
+ */
+export function isConnectionError(err: unknown): boolean {
+  // Un 500 NO entra: ahi el servicio contesto y tiene algo puntual que decir
+  // (por ejemplo, que la base no se puede leer). Ese mensaje hay que mostrarlo.
+  if (err instanceof ApiError) return err.status === 401 || err.status === 503;
+  // fetch tira TypeError cuando no hay nadie escuchando del otro lado.
+  return err instanceof TypeError;
 }
 
 // ─── Endpoints ───────────────────────────────────────────────────────────────
@@ -154,12 +226,9 @@ export function getConfig(): Promise<ServiceConfig> {
 export async function updateConfig(
   patch: UpdateConfigRequest,
 ): Promise<UpdateConfigResponse> {
-  const res = await fetch(`${BASE}/api/config`, {
+  const res = await authedFetch("/api/config", {
     method: "PUT",
-    headers: {
-      "X-XS20-Token": getToken(),
-      "Content-Type": "application/json",
-    },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(patch),
   });
   if (!res.ok) {
@@ -215,28 +284,117 @@ export function apiErrorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-/**
- * Se suscribe al stream SSE de logs. Devuelve una funcion para cerrar.
- */
-export function streamLogs(onEvent: (e: LogLine) => void): () => void {
-  const token = getToken();
-  const url = `${BASE}/api/logs/stream${token ? `?token=${encodeURIComponent(token)}` : ""}`;
-  const es = new EventSource(url);
-  es.addEventListener("log", (e) => {
-    try {
-      onEvent(JSON.parse((e as MessageEvent).data));
-    } catch {
-      // ignore malformed
-    }
-  });
-  return () => es.close();
-}
-
 export interface LogLine {
   time: string;
   level: "debug" | "info" | "warn" | "error";
   msg: string;
   ctx?: Record<string, unknown>;
+}
+
+// ─── Stream SSE de actividad ─────────────────────────────────────────────────
+//
+// Un unico EventSource compartido por toda la app (App.tsx lo usa para
+// refrescar la lista, LogsView para mostrar las lineas). El EventSource nativo
+// reconecta solo, PERO reusa siempre la misma URL — y el token viaja en la
+// query string. Si arrancamos sin token, ese reintento automatico da 401 para
+// siempre. Por eso manejamos la reconexion a mano: cerramos, pedimos el token
+// de nuevo y reconstruimos la URL.
+
+/** "connecting" = todavia no conectamos nunca; "reconnecting" = se cayo. */
+export type StreamState = "connecting" | "open" | "reconnecting";
+
+export interface StreamHandlers {
+  /** Llega una linea de log nueva. */
+  onEvent?: (e: LogLine) => void;
+  /** Cambio el estado de la conexion. Se llama al suscribirse con el actual. */
+  onState?: (s: StreamState) => void;
+  /** Se reconecto despues de una caida (util para re-sincronizar datos). */
+  onReconnect?: () => void;
+}
+
+const RECONNECT_MIN_MS = 1500;
+const RECONNECT_MAX_MS = 10000;
+
+let es: EventSource | null = null;
+let streamState: StreamState = "connecting";
+let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+let reconnectAttempts = 0;
+let hadDropped = false;
+const subscribers = new Set<StreamHandlers>();
+
+function setStreamState(s: StreamState): void {
+  if (streamState === s) return;
+  streamState = s;
+  for (const sub of subscribers) sub.onState?.(s);
+}
+
+function connectStream(): void {
+  // Ya hay una conexion viva, o una reconexion agendada: no abrir una segunda.
+  if (es || reconnectTimer !== null) return;
+
+  const token = getToken();
+  const url = `${BASE}/api/logs/stream${token ? `?token=${encodeURIComponent(token)}` : ""}`;
+  const source = new EventSource(url);
+  es = source;
+
+  source.onopen = () => {
+    reconnectAttempts = 0;
+    setStreamState("open");
+    if (hadDropped) {
+      hadDropped = false;
+      for (const sub of subscribers) sub.onReconnect?.();
+    }
+  };
+
+  source.addEventListener("log", (e) => {
+    let line: LogLine;
+    try {
+      line = JSON.parse((e as MessageEvent).data) as LogLine;
+    } catch {
+      return; // linea malformada
+    }
+    for (const sub of subscribers) sub.onEvent?.(line);
+  });
+
+  source.onerror = () => {
+    // Cortamos el reintento automatico del navegador: reconectamos nosotros
+    // con un token fresco (ver comentario de arriba).
+    source.close();
+    if (es === source) es = null;
+    hadDropped = true;
+    setStreamState("reconnecting");
+    scheduleReconnect();
+  };
+}
+
+function scheduleReconnect(): void {
+  if (reconnectTimer !== null || subscribers.size === 0) return;
+  const delay = Math.min(RECONNECT_MAX_MS, RECONNECT_MIN_MS * 2 ** reconnectAttempts);
+  reconnectAttempts++;
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    if (subscribers.size === 0) return;
+    // Sin token no hay stream posible: volvemos a pedirselo al host antes de
+    // reintentar (el servicio pudo haber arrancado recien).
+    if (!hasToken()) {
+      void refreshToken().finally(connectStream);
+    } else {
+      connectStream();
+    }
+  }, delay);
+}
+
+/**
+ * Se suscribe al stream de actividad. Devuelve una funcion para desuscribirse.
+ * Todos los suscriptores comparten una sola conexion.
+ */
+export function subscribeLogs(handlers: StreamHandlers): () => void {
+  subscribers.add(handlers);
+  handlers.onState?.(streamState);
+  connectStream();
+  return () => {
+    subscribers.delete(handlers);
+  };
 }
 
 export type {
