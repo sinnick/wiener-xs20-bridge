@@ -154,9 +154,72 @@ export interface HealthResponse {
     sizeBytes: number;
     resultCount: number;
   };
+  /**
+   * Estado de la exportacion a .txt (el archivo que abre el laboratorio).
+   *
+   * Opcional para no romper a un servicio viejo: si no viene, la app no muestra
+   * la tarjeta. Ver docs/11-exportacion-txt.md.
+   */
+  export?: ExportStatus;
   /** Ultima vez que recibimos un mensaje del XS 20 (ISO o null). */
   lastMessageAt: string | null;
   version: string;
+}
+
+/**
+ * Como viene saliendo la exportacion a .txt.
+ *
+ * Existe porque un fallo de escritura (carpeta con un typo, unidad de red
+ * caida, disco lleno) era invisible: la app decia "todo bien" y los archivos no
+ * aparecian nunca en la carpeta que mira la operadora.
+ */
+export interface ExportStatus {
+  /** false = exportacion apagada a proposito (carpeta vacia en la config). */
+  enabled: boolean;
+  /** Carpeta destino configurada. */
+  dir: string;
+  /** El ultimo chequeo de la carpeta salio bien. */
+  dirOk: boolean;
+  /** Por que no sirve la carpeta, o null. */
+  dirError: string | null;
+  /** ISO del ultimo .txt escrito bien, o null si todavia no se escribio ninguno. */
+  lastWriteAt: string | null;
+  lastWritePath: string | null;
+  lastErrorAt: string | null;
+  lastError: string | null;
+  lastErrorSampleId: string | null;
+  /** Exportaciones seguidas que vienen fallando (0 = la ultima salio bien). */
+  consecutiveFailures: number;
+  writtenSinceStart: number;
+  failedSinceStart: number;
+  /** true si no hay nada que mirar (deshabilitada tambien cuenta como sana). */
+  healthy: boolean;
+}
+
+// ─── Re-exportacion de .txt ──────────────────────────────────────────────────
+// POST /api/export/rerun regenera los .txt de resultados YA guardados, para
+// recuperar los archivos de los dias en que la carpeta destino estuvo mal.
+
+export interface ExportRerunRequest {
+  /** Resultados puntuales. Si viene, se ignoran los filtros de fecha. */
+  ids?: string[];
+  /** ISO, mismo criterio que GET /api/results. */
+  fromDate?: string;
+  toDate?: string;
+  /** Cuantos regenerar (default 200, tope 500). */
+  limit?: number;
+}
+
+export interface ExportRerunResponse {
+  dir: string;
+  /** Cuantos resultados se intentaron escribir. */
+  attempted: number;
+  written: number;
+  failed: number;
+  /** Ids pedidos que no existen en la base. */
+  notFound: string[];
+  /** Detalle de los primeros fallos (el resto queda en el log). */
+  errors: { id: string; sampleId: string; error: string }[];
 }
 
 // ─── Actualizaciones ─────────────────────────────────────────────────────────

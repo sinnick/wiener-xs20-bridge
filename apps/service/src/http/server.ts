@@ -14,6 +14,7 @@
  *  POST /api/update/check
  *  POST /api/update/download
  *  POST /api/update/skip
+ *  POST /api/export/rerun
  */
 
 import type { Server } from "bun";
@@ -27,9 +28,13 @@ import type {
   ServiceConfig,
   UpdateConfigRequest,
   UpdateConfigResponse,
+  ExportRerunRequest,
+  ExportRerunResponse,
 } from "@xs20/shared";
 import { encodeHistogramBase64 } from "@xs20/shared";
 
+import { exportStatus, probeAndRecord } from "../export/export-status.js";
+import { rerunExports, RERUN_MAX_LIMIT } from "../export/rerun.js";
 import type { XsRepo } from "../db/repo.js";
 import type { LogLevel } from "../logger.js";
 import type { Logger } from "../logger.js";
@@ -145,6 +150,9 @@ export class HttpServer {
       } else if (path === "/api/update/skip" && req.method === "POST") {
         if (!this.checkAuth(req, url)) return this.unauthorized();
         res = await this.updateSkip(req);
+      } else if (path === "/api/export/rerun" && req.method === "POST") {
+        if (!this.checkAuth(req, url)) return this.unauthorized();
+        res = await this.exportRerun(req);
       } else {
         res = json({ error: { code: "NOT_FOUND", message: path } }, 404);
       }
@@ -225,9 +233,18 @@ export class HttpServer {
     // parece sano pero no guarda nada. Ver XsRepo.probeWritable().
     const dbWritable = this.opts.repo.probeWritable().ok;
 
+    // Estado de la exportacion a .txt. Es una foto en memoria a proposito: NO
+    // se chequea la carpeta en cada /api/health porque una unidad de red caida
+    // puede colgar la escritura de prueba varios segundos y este endpoint lo
+    // llama la app cada 3s. La carpeta se prueba al arrancar, al cambiarla y en
+    // cada exportacion real. Ver apps/service/src/export/export-status.ts.
+    const exportSnapshot = exportStatus.snapshot(this.opts.config.exportDir);
+
     const clientStatus = client?.getStatus();
     const body: HealthResponse = {
-      status: transport.healthy && dbWritable ? "ok" : "degraded",
+      // El .txt es el producto que mira el laboratorio: si no se esta pudiendo
+      // escribir, el servicio NO esta sano aunque el resto funcione.
+      status: transport.healthy && dbWritable && exportSnapshot.healthy ? "ok" : "degraded",
       uptime: Math.floor((Date.now() - this.opts.startedAt.getTime()) / 1000),
       connectionMode: mode,
       tcpListener: {
@@ -253,6 +270,7 @@ export class HttpServer {
         sizeBytes: this.opts.repo.databaseSizeBytes(),
         resultCount: this.opts.repo.countResults(),
       },
+      export: exportSnapshot,
       lastMessageAt: transport.lastMessageAt?.toISOString() ?? null,
       version: this.opts.version,
     };
@@ -558,8 +576,13 @@ export class HttpServer {
     // Retencion: se aplica en la proxima corrida de purga.
     cfg.rawRetentionDays = newRetention;
 
-    // Carpeta de exportacion: aplica en el proximo resultado recibido.
+    // Carpeta de exportacion: aplica en el proximo resultado recibido. La
+    // probamos ACA, no cuando llegue la muestra: si el destino tiene un typo o
+    // la unidad de red no esta, se ve en /api/health al instante y no dentro de
+    // una semana cuando alguien note que faltan archivos.
+    const exportDirChanged = newExportDir !== cfg.exportDir;
     cfg.exportDir = newExportDir;
+    if (exportDirChanged) probeAndRecord(newExportDir, this.opts.logger);
 
     // Chequeo de updates: el UpdateChecker lo lee en vivo via isEnabled().
     cfg.updateCheckEnabled = newUpdateCheckEnabled;
@@ -664,6 +687,110 @@ export class HttpServer {
     }
     this.opts.logger.info("update.version_skipped", { version: cfg.skippedVersion });
     return json(checker.getStatus());
+  }
+
+  // ─── Exportacion a .txt ───────────────────────────────────────────────────
+
+  /**
+   * POST /api/export/rerun — regenera los .txt de resultados ya guardados.
+   *
+   * Es la salida del escenario caro: la carpeta destino estuvo mal configurada
+   * unos dias, los resultados se guardaron igual pero los .txt no existen. Sin
+   * esto habria que volver a correr las muestras en el analizador.
+   *
+   * Body (todo opcional): { ids, fromDate, toDate, limit }.
+   */
+  private async exportRerun(req: Request): Promise<Response> {
+    let body: ExportRerunRequest = {};
+    // Sin cuerpo tambien vale: regenera los ultimos por default.
+    const rawBody = await req.text();
+    if (rawBody.trim().length > 0) {
+      try {
+        body = JSON.parse(rawBody) as ExportRerunRequest;
+      } catch {
+        return json(
+          { error: { code: "VALIDATION_ERROR", message: "El cuerpo no es JSON válido" } },
+          400,
+        );
+      }
+    }
+    if (typeof body !== "object" || body === null) {
+      return json(
+        { error: { code: "VALIDATION_ERROR", message: "Se esperaba un objeto" } },
+        400,
+      );
+    }
+
+    if (body.ids !== undefined) {
+      if (!Array.isArray(body.ids) || body.ids.some((id) => typeof id !== "string")) {
+        return json(
+          { error: { code: "VALIDATION_ERROR", message: "'ids' debe ser una lista de textos" } },
+          400,
+        );
+      }
+    }
+    if (
+      body.limit !== undefined &&
+      (!Number.isInteger(body.limit) || body.limit < 1 || body.limit > RERUN_MAX_LIMIT)
+    ) {
+      return json(
+        {
+          error: {
+            code: "VALIDATION_ERROR",
+            message: `El límite debe ser un entero entre 1 y ${RERUN_MAX_LIMIT}`,
+          },
+        },
+        400,
+      );
+    }
+
+    const dir = this.opts.config.exportDir;
+    if (dir.length === 0) {
+      return json(
+        {
+          error: {
+            code: "EXPORT_DISABLED",
+            message:
+              "La exportación a .txt está deshabilitada. Configurá una carpeta en " +
+              "Estado → Configuración y volvé a intentar.",
+          },
+        },
+        409,
+      );
+    }
+
+    const result = rerunExports({
+      repo: this.opts.repo,
+      logger: this.opts.logger,
+      dir,
+      ids: body.ids,
+      fromDate: body.fromDate,
+      toDate: body.toDate,
+      limit: body.limit,
+    });
+
+    // Carpeta inaccesible: un solo error claro en lugar de 200 iguales.
+    if (result.dirError !== null) {
+      return json(
+        {
+          error: {
+            code: "EXPORT_DIR_UNAVAILABLE",
+            message: `No se puede escribir en ${dir}. ${result.dirError}`,
+          },
+        },
+        409,
+      );
+    }
+
+    const resp: ExportRerunResponse = {
+      dir: result.dir,
+      attempted: result.attempted,
+      written: result.written,
+      failed: result.failed,
+      notFound: result.notFound,
+      errors: result.errors,
+    };
+    return json(resp);
   }
 
   private logStream(): Response {
