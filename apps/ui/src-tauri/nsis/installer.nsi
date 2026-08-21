@@ -553,6 +553,9 @@ Section Install
   Sleep 3000
   nsExec::ExecToLog '"$SYSDIR\taskkill.exe" /f /im xs20-service.exe'
   Pop $R0
+  ; En una PC ARM64 el que corre es el binario nativo, con otro nombre.
+  nsExec::ExecToLog '"$SYSDIR\taskkill.exe" /f /im xs20-service-arm64.exe'
+  Pop $R0
   ; ═══ FIN XS20 CUSTOM ═══
 
   ; Copy main executable

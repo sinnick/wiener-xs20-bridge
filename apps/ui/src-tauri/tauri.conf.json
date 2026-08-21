@@ -43,6 +43,7 @@
       ],
       "resources": {
         "binaries/xs20-service.exe": ".",
+        "binaries/xs20-service-arm64.exe": ".",
         "windows/nssm.exe": ".",
         "windows/install-service.ps1": ".",
         "windows/uninstall-service.ps1": "."

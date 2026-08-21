@@ -120,6 +120,40 @@ fn service_already_running() -> bool {
     .is_ok()
 }
 
+/// True si la PC es ARM64 (Windows on ARM), sin importar que este proceso corra
+/// emulado en x64.
+///
+/// No sirve `cfg!(target_arch)` (es de compilacion: siempre x86_64) ni
+/// `PROCESSOR_ARCHITECTURE` del proceso (bajo emulacion dice "AMD64"). El unico
+/// valor confiable sin meter crates nuevas es el del registro, que guarda la
+/// arquitectura nativa de la maquina y no lo redirige WOW64.
+fn is_native_arm64() -> bool {
+    if !cfg!(target_os = "windows") {
+        return false;
+    }
+    if let Ok(v) = std::env::var("PROCESSOR_ARCHITEW6432") {
+        return v.eq_ignore_ascii_case("ARM64");
+    }
+    let mut cmd = Command::new("reg");
+    cmd.args([
+        "query",
+        r"HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment",
+        "/v",
+        "PROCESSOR_ARCHITECTURE",
+    ]);
+    // Sin esto, `reg` abre una ventana de consola negra al arrancar la app.
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    match cmd.output() {
+        Ok(o) => String::from_utf8_lossy(&o.stdout).to_uppercase().contains("ARM64"),
+        Err(_) => false,
+    }
+}
+
 /// Lanza el servicio si el binario existe junto al ejecutable de la app.
 fn spawn_service(app: &tauri::AppHandle) -> Option<Child> {
     if service_already_running() {
@@ -127,20 +161,29 @@ fn spawn_service(app: &tauri::AppHandle) -> Option<Child> {
         return None;
     }
 
-    let exe_name = if cfg!(target_os = "windows") {
-        "xs20-service.exe"
+    // El instalador lleva los dos binarios del servicio (x64 baseline y ARM64).
+    // En una PC ARM64 esta app corre emulada, asi que preferimos el nativo y
+    // dejamos el x64 como fallback (si por lo que sea no esta empaquetado).
+    let exe_names: Vec<&str> = if cfg!(target_os = "windows") {
+        if is_native_arm64() {
+            vec!["xs20-service-arm64.exe", "xs20-service.exe"]
+        } else {
+            vec!["xs20-service.exe"]
+        }
     } else {
-        "xs20-service"
+        vec!["xs20-service"]
     };
 
     let mut candidates: Vec<PathBuf> = Vec::new();
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            candidates.push(dir.join(exe_name));
+    for exe_name in &exe_names {
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(dir) = exe.parent() {
+                candidates.push(dir.join(exe_name));
+            }
         }
-    }
-    if let Some(resource_dir) = app.path_resolver().resource_dir() {
-        candidates.push(resource_dir.join(exe_name));
+        if let Some(resource_dir) = app.path_resolver().resource_dir() {
+            candidates.push(resource_dir.join(exe_name));
+        }
     }
 
     // is_file y no exists: en Tauri v1 un resource mal mapeado puede terminar

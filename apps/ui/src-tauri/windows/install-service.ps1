@@ -16,7 +16,33 @@ Start-Transcript -Path (Join-Path $logsDir "install-service.log") -Append
 try {
   $svc  = "WienerXS20Service"
   $nssm = Join-Path $InstallDir "nssm.exe"
-  $exe  = Join-Path $InstallDir "xs20-service.exe"
+
+  # ── Elegir el binario del servicio segun la arquitectura REAL de la PC ──────
+  # El instalador es x64 y en una PC ARM64 corre emulado, asi que
+  # $env:PROCESSOR_ARCHITECTURE dentro de este proceso puede mentir y decir
+  # "AMD64". El valor nativo esta en el registro (no lo redirige WOW64).
+  $nativeArch = $env:PROCESSOR_ARCHITEW6432
+  if (-not $nativeArch) {
+    try {
+      $nativeArch = (Get-ItemProperty `
+        -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" `
+        -Name PROCESSOR_ARCHITECTURE -ErrorAction Stop).PROCESSOR_ARCHITECTURE
+    } catch {
+      $nativeArch = $env:PROCESSOR_ARCHITECTURE
+    }
+  }
+  Write-Output "Arquitectura nativa detectada: $nativeArch"
+
+  $exe = Join-Path $InstallDir "xs20-service.exe"
+  if ($nativeArch -eq "ARM64") {
+    $arm = Join-Path $InstallDir "xs20-service-arm64.exe"
+    if (Test-Path $arm) {
+      $exe = $arm
+      Write-Output "Usando el binario ARM64 nativo: $exe"
+    } else {
+      Write-Output "No hay binario ARM64 en $InstallDir; se usa el x64 emulado."
+    }
+  }
 
   if (-not (Test-Path $exe))  { throw "No existe $exe" }
   if (-not (Test-Path $nssm)) { throw "No existe $nssm" }
