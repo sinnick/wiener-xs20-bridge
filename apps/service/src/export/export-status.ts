@@ -40,9 +40,22 @@ export class ExportStatusTracker {
   private writtenSinceStart = 0;
   private failedSinceStart = 0;
 
+  /**
+   * Pasa a hablar de otra carpeta. Lo que sabiamos de la anterior (si aceptaba
+   * escrituras, cuantas fallas seguidas lleva) no dice nada del destino nuevo:
+   * arrastrarlo haria que la app siga en rojo despues de corregir la carpeta.
+   */
+  private switchDir(dir: string): void {
+    if (dir === this.dir) return;
+    this.dir = dir;
+    this.dirOk = true;
+    this.dirError = null;
+    this.consecutiveFailures = 0;
+  }
+
   /** Resultado de un chequeo de la carpeta (arranque o cambio de config). */
   recordProbe(dir: string, result: { ok: true } | { ok: false; error: string }): void {
-    this.dir = dir;
+    this.switchDir(dir);
     this.dirOk = result.ok;
     this.dirError = result.ok ? null : result.error;
     if (result.ok) {
@@ -55,7 +68,7 @@ export class ExportStatusTracker {
   }
 
   recordSuccess(dir: string, path: string, now = new Date()): void {
-    this.dir = dir;
+    this.switchDir(dir);
     this.dirOk = true;
     this.dirError = null;
     this.lastWriteAt = now;
@@ -65,7 +78,7 @@ export class ExportStatusTracker {
   }
 
   recordFailure(dir: string, sampleId: string, error: string, now = new Date()): void {
-    this.dir = dir;
+    this.switchDir(dir);
     this.dirOk = false;
     this.dirError = error;
     this.lastErrorAt = now;

@@ -97,6 +97,21 @@ describe("ExportStatusTracker", () => {
     expect(snap.healthy).toBe(false);
   });
 
+  test("cambiar de carpeta no arrastra los fallos de la anterior", () => {
+    // Si el contador siguiera corriendo, la app quedaria en rojo despues de que
+    // la operadora corrigio el destino.
+    const t = new ExportStatusTracker();
+    t.recordFailure("/vieja", "000015", "ENOENT");
+    t.recordFailure("/vieja", "000016", "ENOENT");
+
+    t.recordFailure("/nueva", "000017", "ENOSPC");
+    expect(t.snapshot("/nueva").consecutiveFailures).toBe(1);
+
+    t.recordSuccess("/nueva", "/nueva/000018.txt");
+    expect(t.snapshot("/nueva").healthy).toBe(true);
+    expect(t.snapshot("/nueva").failedSinceStart).toBe(3);
+  });
+
   test("la exportacion deshabilitada cuenta como sana", () => {
     const t = new ExportStatusTracker();
     t.recordFailure("/x", "000015", "ENOENT");

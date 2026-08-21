@@ -104,10 +104,6 @@ export const EXPORT_ORDER: readonly HemogramParam[] = [
   "mch",
 ];
 
-/** Lineas del archivo ya resueltas (titulo + parametro + decimales). */
-export const EXPORT_LINES: readonly (ExportFormat & { param: HemogramParam })[] =
-  EXPORT_ORDER.map((param) => ({ param, ...EXPORT_FORMAT[param] }));
-
 /** Parametros del contrato que quedaron fuera del orden (deberia ser vacio). */
 export function missingFromExportOrder(): HemogramParam[] {
   return HEMOGRAM_PARAMS.filter((p) => !EXPORT_ORDER.includes(p));

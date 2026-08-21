@@ -15,7 +15,7 @@ import { HEMOGRAM_PARAMS } from "@xs20/shared";
 import type { HemogramParam, HemogramResult, HemogramValue } from "@xs20/shared";
 
 import { Logger } from "../logger.js";
-import { ExportStatusTracker } from "./export-status.js";
+import { ExportStatusTracker, exportStatus } from "./export-status.js";
 import {
   EXPORT_FORMAT,
   EXPORT_ORDER,
@@ -477,6 +477,20 @@ describe("TxtExporter", () => {
     expect(snap.dirOk).toBe(false);
     expect(snap.healthy).toBe(false);
     expect(snap.dirError).toBeTruthy();
+  });
+
+  test("sin tracker inyectado reporta al global, que es el que lee /api/health", () => {
+    // main.ts construye el exporter SIN pasarle status: si el default no fuera
+    // el tracker global, /api/health mostraria "todo bien" para siempre.
+    const base = tmpDirPath();
+    const notADir = join(base, "ocupado-global");
+    writeFileSync(notADir, "x");
+    new TxtExporter({
+      getDir: () => notADir,
+      logger: silentLogger(),
+      probeOnStart: false,
+    }).export(fullHemogram());
+    expect(exportStatus.snapshot(notADir).healthy).toBe(false);
   });
 
   test("el chequeo al construir crea la carpeta que falta y la deja limpia", () => {
