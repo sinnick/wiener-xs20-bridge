@@ -21,8 +21,14 @@ import { Logger } from "./logger.js";
 import { UpdateChecker } from "./update/update-checker.js";
 import { VERSION } from "./version.js";
 
-/** Repo publico de GitHub contra el que se chequean versiones nuevas. */
-const UPDATE_REPO_SLUG = "sinnick/wiener-xs20-bridge";
+/**
+ * Manifest de actualizaciones publicado en nuestro VPS (lo sube
+ * `bun run release`, ver scripts/release.ts y docs/12-actualizaciones.md).
+ * Se puede apuntar a otro servidor para probar: XS20_UPDATE_MANIFEST_URL.
+ */
+const UPDATE_MANIFEST_URL =
+  process.env.XS20_UPDATE_MANIFEST_URL ??
+  "https://sinnick.dev/wiener/update/latest.json";
 
 function loadOrCreateApiToken(dataDir: string): string {
   const tokenDir = join(dataDir, "config");
@@ -155,11 +161,11 @@ async function main(): Promise<void> {
     tcp.start();
   }
 
-  // Chequeo de versiones nuevas contra GitHub Releases. Lee los settings en
+  // Chequeo de versiones nuevas contra el manifest del VPS. Lee los settings en
   // vivo, asi el toggle y el "omitir version" de la app aplican sin reiniciar.
   const updateChecker = new UpdateChecker({
     currentVersion: VERSION,
-    repoSlug: UPDATE_REPO_SLUG,
+    manifestUrl: UPDATE_MANIFEST_URL,
     updatesDir: join(dataDir, "updates"),
     logger,
     isEnabled: () => config.updateCheckEnabled,

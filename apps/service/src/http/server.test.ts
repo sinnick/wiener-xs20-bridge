@@ -147,22 +147,20 @@ describe("HttpServer - updates", () => {
     // Checker con fetch mockeado: siempre hay una 9.9.9 publicada.
     checker = new UpdateChecker({
       currentVersion: "0.1.0",
-      repoSlug: "test/repo",
+      manifestUrl: "https://example.com/update/latest.json",
       updatesDir: join(tmpdir(), `xs20-test-upd-${port}`),
       logger,
       fetchImpl: async () =>
         new Response(
           JSON.stringify({
-            tag_name: "v9.9.9",
-            body: "notas",
-            published_at: "2026-08-13T00:00:00Z",
-            assets: [
-              {
-                name: "wiener-xs20-bridge_9.9.9_x64-setup.exe",
-                browser_download_url: "https://example.com/setup.exe",
-                size: 4,
-              },
-            ],
+            version: "9.9.9",
+            notes: "notas",
+            publishedAt: "2026-08-13T00:00:00Z",
+            installer: {
+              url: "https://example.com/update/wiener-xs20-bridge_9.9.9_x64-setup.exe",
+              sha256: "a".repeat(64),
+              size: 4,
+            },
           }),
           { status: 200 },
         ),

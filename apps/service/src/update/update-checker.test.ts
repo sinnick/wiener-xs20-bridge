@@ -33,18 +33,39 @@ afterEach(() => {
   }
 });
 
-interface ReleaseAsset {
-  name: string;
-  browser_download_url: string;
-  size?: number;
-  digest?: string;
+const MANIFEST_URL = "https://sinnick.dev/wiener/update/latest.json";
+
+/** sha256 de un cuerpo de instalador de prueba. */
+function sha256Of(chunks: Uint8Array[]): string {
+  const hasher = new Bun.CryptoHasher("sha256");
+  for (const c of chunks) hasher.update(c);
+  return hasher.digest("hex");
 }
 
-function releaseJson(tag: string, assets: ReleaseAsset[], body = "notas"): Response {
-  return new Response(
-    JSON.stringify({ tag_name: tag, body, published_at: "2026-08-13T12:00:00Z", assets }),
-    { status: 200, headers: { "Content-Type": "application/json" } },
-  );
+interface ManifestInstaller {
+  url?: unknown;
+  sha256?: unknown;
+  size?: unknown;
+  /** Campos extra que el checker tiene que ignorar sin romperse. */
+  [key: string]: unknown;
+}
+
+function manifestJson(
+  version: string,
+  installer: ManifestInstaller | null = null,
+  extra: Record<string, unknown> = {},
+): Response {
+  const body: Record<string, unknown> = {
+    version,
+    notes: "notas",
+    publishedAt: "2026-08-13T12:00:00Z",
+    ...extra,
+  };
+  if (installer !== null) body.installer = installer;
+  return new Response(JSON.stringify(body), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+  });
 }
 
 function makeChecker(
@@ -53,7 +74,7 @@ function makeChecker(
 ): UpdateChecker {
   return new UpdateChecker({
     currentVersion: "0.1.0",
-    repoSlug: "sinnick/wiener-xs20-bridge",
+    manifestUrl: MANIFEST_URL,
     updatesDir: tmpUpdatesDir(),
     logger: silentLogger(),
     fetchImpl,
@@ -72,15 +93,15 @@ async function waitFor(cond: () => boolean, timeoutMs = 2000): Promise<void> {
   }
 }
 
-const SETUP_ASSET: ReleaseAsset = {
-  name: "wiener-xs20-bridge_0.2.0_x64-setup.exe",
-  browser_download_url: "https://example.com/download/setup.exe",
+const INSTALLER: ManifestInstaller = {
+  url: "wiener-xs20-bridge_0.2.0_x64-setup.exe",
+  sha256: "a".repeat(64),
   size: 10,
 };
 
 describe("checkNow", () => {
-  test("version nueva → update-available con datos del release", async () => {
-    const checker = makeChecker(async () => releaseJson("v0.2.0", [SETUP_ASSET]));
+  test("version nueva → update-available con datos del manifest", async () => {
+    const checker = makeChecker(async () => manifestJson("0.2.0", INSTALLER));
     const st = await checker.checkNow();
     expect(st.phase).toBe("update-available");
     expect(st.latestVersion).toBe("0.2.0");
@@ -90,21 +111,43 @@ describe("checkNow", () => {
     expect(st.lastCheckAt).not.toBeNull();
   });
 
+  test("acepta version con prefijo v y url absoluta", async () => {
+    const checker = makeChecker(async () =>
+      manifestJson("v0.3.0", {
+        ...INSTALLER,
+        url: "https://otro.example.com/setup.exe",
+      }),
+    );
+    const st = await checker.checkNow();
+    expect(st.phase).toBe("update-available");
+    expect(st.latestVersion).toBe("0.3.0");
+  });
+
+  test("campos extra desconocidos no rompen el parseo", async () => {
+    const checker = makeChecker(async () =>
+      manifestJson("0.2.0", { ...INSTALLER, arch: "x64" }, { channel: "stable", futuro: 1 }),
+    );
+    const st = await checker.checkNow();
+    expect(st.phase).toBe("update-available");
+  });
+
   test("misma version → idle sin latestVersion", async () => {
-    const checker = makeChecker(async () => releaseJson("v0.1.0", [SETUP_ASSET]));
+    const checker = makeChecker(async () => manifestJson("0.1.0", INSTALLER));
     const st = await checker.checkNow();
     expect(st.phase).toBe("idle");
     expect(st.latestVersion).toBeNull();
+    expect(st.lastCheckError).toBeNull();
   });
 
   test("version menor → idle", async () => {
-    const checker = makeChecker(async () => releaseJson("v0.0.9", [SETUP_ASSET]));
+    const checker = makeChecker(async () => manifestJson("0.0.9", INSTALLER));
     const st = await checker.checkNow();
     expect(st.phase).toBe("idle");
+    expect(st.lastCheckError).toBeNull();
   });
 
   test("version omitida por el usuario → idle pero latestVersion informativo", async () => {
-    const checker = makeChecker(async () => releaseJson("v0.2.0", [SETUP_ASSET]), {
+    const checker = makeChecker(async () => manifestJson("0.2.0", INSTALLER), {
       getSkippedVersion: () => "0.2.0",
     });
     const st = await checker.checkNow();
@@ -113,40 +156,100 @@ describe("checkNow", () => {
     expect(st.skippedVersion).toBe("0.2.0");
   });
 
-  test("red caida → lastCheckError sin lanzar, phase preservada", async () => {
+  // ── Casos benignos: una PC sin internet no tiene que ver rojo ──────────────
+
+  test("red caida → sin error visible, phase preservada", async () => {
     const checker = makeChecker(async () => {
       throw new Error("fetch failed");
     });
     const st = await checker.checkNow();
     expect(st.phase).toBe("idle");
-    expect(st.lastCheckError).toBe("fetch failed");
+    expect(st.lastCheckError).toBeNull();
     expect(st.lastCheckAt).not.toBeNull();
   });
 
-  test("HTTP 403 → error legible de rate limit", async () => {
-    const checker = makeChecker(async () => new Response("forbidden", { status: 403 }));
+  test("404 (todavia no se publico nada) → sin error visible", async () => {
+    const checker = makeChecker(async () => new Response("Not Found", { status: 404 }));
     const st = await checker.checkNow();
-    expect(st.lastCheckError).toContain("rate limit");
+    expect(st.phase).toBe("idle");
+    expect(st.lastCheckError).toBeNull();
   });
 
-  test("JSON invalido → lastCheckError", async () => {
+  test("servidor caido (503) → sin error visible", async () => {
+    const checker = makeChecker(async () => new Response("nope", { status: 503 }));
+    const st = await checker.checkNow();
+    expect(st.phase).toBe("idle");
+    expect(st.lastCheckError).toBeNull();
+  });
+
+  test("el catch-all del sitio devuelve HTML 200 → sin error visible", async () => {
     const checker = makeChecker(
-      async () => new Response("<html>not json</html>", { status: 200 }),
+      async () =>
+        new Response("<!doctype html><html><body>home</body></html>", {
+          status: 200,
+          headers: { "Content-Type": "text/html" },
+        }),
     );
     const st = await checker.checkNow();
     expect(st.phase).toBe("idle");
-    expect(st.lastCheckError).not.toBeNull();
+    expect(st.lastCheckError).toBeNull();
+    expect(st.latestVersion).toBeNull();
   });
 
-  test("release sin asset -setup.exe → lastCheckError", async () => {
-    const checker = makeChecker(async () =>
-      releaseJson("v0.2.0", [
-        { name: "SHA256SUMS.txt", browser_download_url: "https://example.com/sums" },
-      ]),
+  test("JSON que no es un manifest → sin error visible", async () => {
+    const checker = makeChecker(
+      async () => new Response(JSON.stringify([1, 2, 3]), { status: 200 }),
     );
     const st = await checker.checkNow();
     expect(st.phase).toBe("idle");
-    expect(st.lastCheckError).toContain("-setup.exe");
+    expect(st.lastCheckError).toBeNull();
+  });
+
+  // ── Casos accionables: el manifest existe pero esta mal publicado ──────────
+
+  test("version invalida en el manifest → error visible", async () => {
+    const checker = makeChecker(async () => manifestJson("ultima", INSTALLER));
+    const st = await checker.checkNow();
+    expect(st.phase).toBe("idle");
+    expect(st.lastCheckError).toContain("version invalida");
+  });
+
+  test("manifest sin bloque installer → error visible", async () => {
+    const checker = makeChecker(async () => manifestJson("0.2.0", null));
+    const st = await checker.checkNow();
+    expect(st.lastCheckError).toContain("installer");
+  });
+
+  test("manifest sin sha256 → error visible (el hash es obligatorio)", async () => {
+    const checker = makeChecker(async () =>
+      manifestJson("0.2.0", { url: INSTALLER.url, size: 10 }),
+    );
+    const st = await checker.checkNow();
+    expect(st.lastCheckError).toContain("sha256");
+  });
+
+  test("sha256 que no es hex de 64 → error visible", async () => {
+    const checker = makeChecker(async () =>
+      manifestJson("0.2.0", { ...INSTALLER, sha256: "abc123" }),
+    );
+    const st = await checker.checkNow();
+    expect(st.lastCheckError).toContain("sha256");
+  });
+
+  test("url del instalador invalida → error visible", async () => {
+    const checker = makeChecker(async () =>
+      manifestJson("0.2.0", { ...INSTALLER, url: "ftp://servidor/setup.exe" }),
+    );
+    const st = await checker.checkNow();
+    expect(st.lastCheckError).toContain("URL invalida");
+  });
+
+  test("un manifest roto de una version VIEJA no molesta", async () => {
+    // Nadie va a instalar 0.0.9: no hace falta validar su instalador.
+    const checker = makeChecker(async () => manifestJson("0.0.9", null));
+    const st = await checker.checkNow();
+    expect(st.phase).toBe("idle");
+    expect(st.lastCheckError).toBeNull();
   });
 
   test("deshabilitado → no fetchea", async () => {
@@ -154,7 +257,7 @@ describe("checkNow", () => {
     const checker = makeChecker(
       async () => {
         calls++;
-        return releaseJson("v0.2.0", [SETUP_ASSET]);
+        return manifestJson("0.2.0", INSTALLER);
       },
       { isEnabled: () => false },
     );
@@ -164,39 +267,79 @@ describe("checkNow", () => {
     expect(st.updateCheckEnabled).toBe(false);
   });
 
-  test("un chequeo fallido despues de uno exitoso preserva el update-available", async () => {
+  test("un chequeo sin red despues de uno exitoso preserva el update-available", async () => {
     let fail = false;
     const checker = makeChecker(async () => {
       if (fail) throw new Error("sin red");
-      return releaseJson("v0.2.0", [SETUP_ASSET]);
+      return manifestJson("0.2.0", INSTALLER);
     });
     await checker.checkNow();
     fail = true;
     const st = await checker.checkNow();
     expect(st.phase).toBe("update-available");
-    expect(st.lastCheckError).toBe("sin red");
+    expect(st.lastCheckError).toBeNull();
+  });
+
+  test("dos chequeos solapados: el segundo no deja la phase pegada en checking", async () => {
+    let calls = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const checker = makeChecker(async () => {
+      calls++;
+      await gate;
+      return manifestJson("0.2.0", INSTALLER);
+    });
+
+    const first = checker.checkNow();
+    // El segundo entra mientras el primero espera la respuesta.
+    const second = await checker.checkNow();
+    expect(second.phase).toBe("checking");
+    expect(calls).toBe(1); // el guard evito el fetch duplicado
+
+    release();
+    await first;
+    expect(checker.getStatus().phase).toBe("update-available");
+  });
+
+  test("timeout del manifest: aborta y no queda pegado", async () => {
+    const checker = makeChecker(
+      async (_url, init) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () =>
+            reject(new Error("The operation timed out")),
+          );
+        }),
+      { manifestTimeoutMs: 50 },
+    );
+    const st = await checker.checkNow();
+    expect(st.phase).toBe("idle");
+    expect(st.lastCheckError).toBeNull();
   });
 });
 
 describe("startDownload", () => {
-  /** fetch que responde el release y despues sirve el binario en chunks. */
+  const CHUNKS = [new Uint8Array([1, 2, 3, 4]), new Uint8Array([5, 6, 7, 8, 9, 10])];
+  const GOOD_SHA = sha256Of(CHUNKS);
+
+  /** fetch que responde el manifest y despues sirve el binario en chunks. */
   function downloadFetch(opts: {
     chunks: Uint8Array[];
     failMidway?: boolean;
-    digest?: string;
+    sha256?: string;
+    size?: number | null;
     onDownloadCall?: () => void;
   }): FetchLike {
-    const asset: ReleaseAsset = {
-      ...SETUP_ASSET,
-      size: opts.failMidway
-        ? undefined as unknown as number
-        : opts.chunks.reduce((n, c) => n + c.byteLength, 0),
-      ...(opts.digest ? { digest: opts.digest } : {}),
+    const installer: ManifestInstaller = {
+      url: "https://sinnick.dev/wiener/update/wiener-xs20-bridge_0.2.0_x64-setup.exe",
+      sha256: opts.sha256 ?? sha256Of(opts.chunks),
+      ...(opts.size === null
+        ? {}
+        : { size: opts.size ?? opts.chunks.reduce((n, c) => n + c.byteLength, 0) }),
     };
     return async (url: string) => {
-      if (url.includes("api.github.com")) {
-        return releaseJson("v0.2.0", [asset]);
-      }
+      if (url === MANIFEST_URL) return manifestJson("0.2.0", installer);
       opts.onDownloadCall?.();
       const stream = new ReadableStream({
         async start(controller) {
@@ -211,8 +354,6 @@ describe("startDownload", () => {
       return new Response(stream, { status: 200 });
     };
   }
-
-  const CHUNKS = [new Uint8Array([1, 2, 3, 4]), new Uint8Array([5, 6, 7, 8, 9, 10])];
 
   test("descarga completa: progreso, rename final y phase downloaded", async () => {
     const updatesDir = tmpUpdatesDir();
@@ -238,7 +379,7 @@ describe("startDownload", () => {
   test("error a mitad de stream → .part borrado y phase error", async () => {
     const updatesDir = tmpUpdatesDir();
     const checker = makeChecker(
-      downloadFetch({ chunks: [CHUNKS[0]!], failMidway: true }),
+      downloadFetch({ chunks: [CHUNKS[0]!], failMidway: true, size: null }),
       { updatesDir },
     );
     await checker.checkNow();
@@ -262,23 +403,24 @@ describe("startDownload", () => {
     expect(downloadCalls).toBe(1);
   });
 
-  test("digest sha256 del asset se verifica", async () => {
-    const hasher = new Bun.CryptoHasher("sha256");
-    for (const c of CHUNKS) hasher.update(c);
-    const goodDigest = `sha256:${hasher.digest("hex")}`;
-
-    const ok = makeChecker(downloadFetch({ chunks: CHUNKS, digest: goodDigest }));
-    await ok.checkNow();
-    ok.startDownload();
-    await waitFor(() => ok.getStatus().phase === "downloaded");
-
+  test("sha256 que no coincide → phase error y nada queda en disco", async () => {
+    const updatesDir = tmpUpdatesDir();
     const bad = makeChecker(
-      downloadFetch({ chunks: CHUNKS, digest: `sha256:${"0".repeat(64)}` }),
+      downloadFetch({ chunks: CHUNKS, sha256: "0".repeat(64) }),
+      { updatesDir },
     );
     await bad.checkNow();
     bad.startDownload();
     await waitFor(() => bad.getStatus().phase === "error");
     expect(bad.getStatus().download?.error).toContain("SHA-256");
+    expect(readdirSync(updatesDir)).toEqual([]);
+  });
+
+  test("sha256 correcto (mayusculas en el manifest) → descarga valida", async () => {
+    const checker = makeChecker(downloadFetch({ chunks: CHUNKS, sha256: GOOD_SHA.toUpperCase() }));
+    await checker.checkNow();
+    checker.startDownload();
+    await waitFor(() => checker.getStatus().phase === "downloaded");
   });
 
   test("sin update disponible no descarga nada", async () => {
@@ -294,18 +436,18 @@ describe("startDownload", () => {
   });
 
   test("checkNow durante una descarga no la pisa", async () => {
-    let releaseCalls = 0;
+    let manifestCalls = 0;
     const impl = downloadFetch({ chunks: CHUNKS });
     const counting: FetchLike = async (url, init) => {
-      if (url.includes("api.github.com")) releaseCalls++;
+      if (url === MANIFEST_URL) manifestCalls++;
       return impl(url, init);
     };
     const checker = makeChecker(counting);
     await checker.checkNow();
-    expect(releaseCalls).toBe(1);
+    expect(manifestCalls).toBe(1);
     checker.startDownload();
     const st = await checker.checkNow();
-    expect(releaseCalls).toBe(1); // no volvio a consultar
+    expect(manifestCalls).toBe(1); // no volvio a consultar
     expect(st.phase).toBe("downloading");
     await waitFor(() => checker.getStatus().phase === "downloaded");
   });
@@ -315,10 +457,24 @@ describe("start/stop", () => {
   test("start limpia .part huerfanos y stop no deja timers", async () => {
     const updatesDir = tmpUpdatesDir();
     writeFileSync(join(updatesDir, "viejo.exe.part"), "basura");
-    const checker = makeChecker(async () => releaseJson("v0.1.0", [SETUP_ASSET]), {
+    const checker = makeChecker(async () => manifestJson("0.1.0", INSTALLER), {
       updatesDir,
       initialDelayMs: 60_000,
     });
+    checker.start();
+    expect(readdirSync(updatesDir)).toEqual([]);
+    checker.stop();
+  });
+
+  test("start borra instaladores viejos aunque no haya red (PC offline)", async () => {
+    const updatesDir = tmpUpdatesDir();
+    writeFileSync(join(updatesDir, "wiener-xs20-bridge_0.2.0_x64-setup.exe"), "100 MB");
+    const checker = makeChecker(
+      async () => {
+        throw new Error("sin red");
+      },
+      { updatesDir, initialDelayMs: 60_000 },
+    );
     checker.start();
     expect(readdirSync(updatesDir)).toEqual([]);
     checker.stop();
