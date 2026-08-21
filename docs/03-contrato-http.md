@@ -121,6 +121,29 @@ recibir resultados).
 `tcpListener` se mantiene en los dos modos para no romper consumidores: en modo `connect`,
 `listening` indica que el cliente está activo y `address:port` es la dirección del equipo.
 
+El bloque `export` (`ExportStatus`) dice cómo viene saliendo el .txt de cada muestra: si
+está habilitada, si la carpeta acepta escrituras, la última escritura, el último error y
+cuántas exportaciones seguidas vienen fallando. Mientras no se pueda escribir, el `status`
+general es `degraded`: el .txt es el producto que abre el laboratorio. Es una foto en
+memoria — la carpeta se prueba al arrancar, al cambiarla y en cada exportación, no en cada
+health. Ver `docs/11-exportacion-txt.md`.
+
+### Exportación a .txt
+
+#### `POST /api/export/rerun`
+
+Vuelve a escribir los .txt de resultados **ya guardados**, para recuperar los archivos de
+los días en que la carpeta destino estuvo mal configurada. Con auth.
+
+Body (todo opcional): `{ ids?: string[], fromDate?: string, toDate?: string, limit?: number }`.
+Sin body regenera los 200 más nuevos (tope 500). Si vienen `ids`, se ignoran los filtros de
+fecha.
+
+Respuesta `ExportRerunResponse`: `{ dir, attempted, written, failed, notFound, errors }`.
+
+Errores: `409 EXPORT_DISABLED` si no hay carpeta configurada, `409 EXPORT_DIR_UNAVAILABLE`
+si la carpeta no acepta escrituras (un solo error con el motivo, en vez de N iguales).
+
 ### Logs en vivo (SSE)
 
 #### `GET /api/logs/stream`
