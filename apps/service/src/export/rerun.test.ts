@@ -113,6 +113,38 @@ describe("rerunExports", () => {
     expect(txt.split("\r\n")).toHaveLength(20); // 19 lineas + ""
   });
 
+  test("si la muestra se corrio dos veces, el .txt queda con el resultado mas nuevo", () => {
+    // Dos corridas de la misma muestra son dos resultados (la deduplicacion es
+    // por MSH-10) que comparten nombre de archivo. Como listResults devuelve
+    // del mas nuevo al mas viejo, escribirlos en ese orden dejaria el VIEJO
+    // pisando al nuevo: el .txt regenerado mostraria datos vencidos.
+    const repo = repoWith(
+      hemogram("r1", "000015", { wbc: value(7.3, "") }, new Date("2026-08-12T09:00:00Z")),
+      hemogram("r2", "000015", { wbc: value(9.9, "") }, new Date("2026-08-12T11:00:00Z")),
+    );
+    const dir = tmpDirPath();
+
+    const res = rerunExports({ repo, logger: silentLogger(), dir });
+
+    expect(readdirSync(dir)).toEqual(["000015.txt"]);
+    expect(readFileSync(join(dir, "000015.txt"), "utf-8")).toContain("LEUCOCITOS: 9.9\r\n");
+    // Un archivo, un intento: no se escribe dos veces el mismo destino.
+    expect(res.attempted).toBe(1);
+    expect(res.written).toBe(1);
+  });
+
+  test("lo mismo si los ids vienen a mano en el orden 'equivocado'", () => {
+    const repo = repoWith(
+      hemogram("r1", "000015", { wbc: value(7.3, "") }, new Date("2026-08-12T09:00:00Z")),
+      hemogram("r2", "000015", { wbc: value(9.9, "") }, new Date("2026-08-12T11:00:00Z")),
+    );
+    const dir = tmpDirPath();
+
+    rerunExports({ repo, logger: silentLogger(), dir, ids: ["r2", "r1"] });
+
+    expect(readFileSync(join(dir, "000015.txt"), "utf-8")).toContain("LEUCOCITOS: 9.9\r\n");
+  });
+
   test("acepta ids puntuales y reporta los que no existen", () => {
     const repo = repoWith(hemogram("r1", "000015", { wbc: value(7.3, "10*9/L") }));
     const dir = tmpDirPath();

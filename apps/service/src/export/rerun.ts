@@ -12,11 +12,13 @@
  * indistinguible del original.
  */
 
+import type { HemogramResult } from "@xs20/shared";
+
 import type { XsRepo } from "../db/repo.js";
 import type { Logger } from "../logger.js";
 import type { ExportStatusTracker } from "./export-status.js";
 import { probeExportDir } from "./export-status.js";
-import { TxtExporter } from "./txt-exporter.js";
+import { exportFileName, TxtExporter } from "./txt-exporter.js";
 
 /** Cuantos resultados se regeneran si no piden un limite. */
 export const RERUN_DEFAULT_LIMIT = 200;
@@ -42,6 +44,7 @@ export interface RerunExportsResult {
   dir: string;
   /** Motivo por el que ni se intento (carpeta inaccesible), o null. */
   dirError: string | null;
+  /** Archivos que se intentaron escribir (uno por muestra, no por resultado). */
   attempted: number;
   written: number;
   failed: number;
@@ -102,12 +105,40 @@ export function rerunExports(params: RerunExportsParams): RerunExportsResult {
   });
 
   const out: RerunExportsResult = { ...base };
+
+  const found: { id: string; hemogram: HemogramResult }[] = [];
   for (const id of ids) {
     const hemogram = repo.getResult(id);
     if (!hemogram) {
       out.notFound.push(id);
       continue;
     }
+    found.push({ id, hemogram });
+  }
+
+  /*
+   * Dos corridas de la misma muestra en el equipo son dos resultados distintos
+   * (la deduplicacion es por MSH-10) pero comparten el nombre del archivo. Si
+   * los escribieramos en el orden en que vienen, el .txt terminaria con el que
+   * quedo ultimo — y `listResults` devuelve del mas nuevo al mas viejo, o sea
+   * que la regeneracion dejaria el resultado VIEJO pisando al nuevo. Nos
+   * quedamos siempre con el mas reciente por archivo, que es lo que dejo la
+   * exportacion en vivo.
+   */
+  const newestByFile = new Map<string, { id: string; hemogram: HemogramResult }>();
+  for (const entry of found) {
+    const file = exportFileName(entry.hemogram.sample.sampleId);
+    const prev = newestByFile.get(file);
+    if (
+      !prev ||
+      prev.hemogram.receivedAt.getTime() < entry.hemogram.receivedAt.getTime()
+    ) {
+      newestByFile.set(file, entry);
+    }
+  }
+  const superseded = found.length - newestByFile.size;
+
+  for (const { id, hemogram } of newestByFile.values()) {
     out.attempted++;
     const res = exporter.export(hemogram);
     if (res.ok && !res.skipped) {
@@ -126,6 +157,7 @@ export function rerunExports(params: RerunExportsParams): RerunExportsResult {
     written: out.written,
     failed: out.failed,
     notFound: out.notFound.length,
+    superseded,
   });
   return out;
 }

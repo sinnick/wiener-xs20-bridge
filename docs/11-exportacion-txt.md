@@ -152,6 +152,11 @@ exportación está deshabilitada responde 409 `EXPORT_DISABLED`, y si la carpeta
 no acepta escrituras 409 `EXPORT_DIR_UNAVAILABLE` con el motivo — un solo error
 claro en lugar de doscientos iguales.
 
+Si la misma muestra se corrió dos veces en el equipo hay dos resultados que
+comparten nombre de archivo: se escribe **el más nuevo** (`attempted` cuenta
+archivos, no resultados). Así el .txt regenerado queda igual que el que había
+dejado la exportación en vivo.
+
 El archivo regenerado se arma exactamente igual que el de la exportación en vivo
 (mismo formato, misma conversión de unidades), así que es indistinguible del
 original.
