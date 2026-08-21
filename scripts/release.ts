@@ -291,16 +291,24 @@ function mb(bytes: number): string {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
-/** Instalador recien generado (el unico *-setup.exe del bundle). */
-function findInstaller(): string {
+/** Instalador recien generado. En el bundle quedan los de corridas anteriores. */
+function findInstaller(version: string): string {
   if (!existsSync(BUNDLE_DIR)) fail(`no existe ${BUNDLE_DIR} — ¿fallo el build de Tauri?`);
-  const candidates = readdirSync(BUNDLE_DIR).filter((n) => n.endsWith("-setup.exe"));
-  if (candidates.length === 0) fail(`no hay ningun *-setup.exe en ${BUNDLE_DIR}`);
-  // Si quedaron varios de corridas anteriores, el mas nuevo.
+  const all = readdirSync(BUNDLE_DIR).filter((n) => n.endsWith("-setup.exe"));
+  if (all.length === 0) fail(`no hay ningun *-setup.exe en ${BUNDLE_DIR}`);
+  // El bundler lo nombra "Wiener XS 20_<version>_x64-setup.exe".
+  const matching = all.filter((n) => n.includes(`_${version}_`));
+  const candidates = matching.length > 0 ? matching : all;
   candidates.sort(
     (a, b) => statSync(join(BUNDLE_DIR, b)).mtimeMs - statSync(join(BUNDLE_DIR, a)).mtimeMs,
   );
-  return join(BUNDLE_DIR, candidates[0]!);
+  const chosen = candidates[0]!;
+  if (matching.length === 0) {
+    console.log(
+      `  \x1b[33m!\x1b[0m ningun instalador del bundle dice ${version}; se usa el mas nuevo (${chosen})`,
+    );
+  }
+  return join(BUNDLE_DIR, chosen);
 }
 
 async function sha256File(path: string): Promise<string> {
@@ -339,7 +347,8 @@ async function main(): Promise<void> {
   step("Configuracion");
   loadReleaseEnv();
   const cfg = noDeploy ? null : resolveDeployConfig();
-  const baseUrl = cfg?.baseUrl ?? (process.env.RELEASE_BASE_URL ?? DEFAULT_BASE_URL);
+  let baseUrl = cfg?.baseUrl ?? process.env.RELEASE_BASE_URL ?? DEFAULT_BASE_URL;
+  if (!baseUrl.endsWith("/")) baseUrl += "/";
   if (cfg) {
     ok(`destino: ${cfg.sshTarget}:${cfg.remoteDir} (puerto ${cfg.sshPort})`);
     ok(`URL publica: ${cfg.baseUrl}`);
@@ -352,7 +361,7 @@ async function main(): Promise<void> {
   const version = resolveVersion();
   ok(`version ${version}, sincronizada en todo el monorepo`);
 
-  const published = await fetchPublishedVersion(baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`);
+  const published = await fetchPublishedVersion(baseUrl);
   if (published !== null) {
     if (compareVersions(version, published) <= 0) {
       fail(
@@ -382,7 +391,7 @@ async function main(): Promise<void> {
   rmSync(DIST, { recursive: true, force: true });
   mkdirSync(DIST, { recursive: true });
 
-  const built = findInstaller();
+  const built = findInstaller(version);
   // Nombre estable y sin espacios: es el que va en el manifest y el que el
   // servicio usa para guardar la descarga.
   const installerName = `wiener-xs20-bridge_${version}_x64-setup.exe`;
@@ -428,10 +437,11 @@ configurado.`);
   step("Subiendo al VPS");
   // Orden importante: el instalador primero. Si se subiera el manifest antes,
   // un chequeo en el medio veria una version anunciada con un .exe inexistente.
-  info("1/2 instalador…");
+  info("1/3 instalador…");
   rsync(installerPath, cfg);
-  info("2/2 manifest…");
+  info("2/3 SHA256SUMS.txt…");
   rsync(join(DIST, "SHA256SUMS.txt"), cfg);
+  info("3/3 latest.json (esto es lo que hace visible la version)…");
   rsync(manifestPath, cfg);
 
   step("Verificando");
