@@ -16,6 +16,7 @@ import {
   Settings,
   Check,
   AlertCircle,
+  FileText,
   FolderOpen,
   FolderSearch,
   RefreshCw,
@@ -26,9 +27,11 @@ import {
   updateConfig,
   getUpdateStatus,
   checkForUpdates,
+  rerunExport,
   apiErrorMessage,
   isConnectionError,
   type ConnectionMode,
+  type ExportStatus,
   type HealthResponse,
   type ServiceConfig,
   type UpdateConfigRequest,
@@ -240,6 +243,9 @@ export function StatusView() {
                 </Row>
               </Card>
 
+              {/* Exportacion de .txt — el archivo que abre el laboratorio */}
+              {health.export && <ExportCard status={health.export} />}
+
               {/* Actualizaciones */}
               <UpdatesCard currentVersion={health.version} />
 
@@ -268,6 +274,109 @@ function generalLabel(health: HealthResponse, phase: string): string {
   if (health.status === "ok") return "En línea";
   if (health.status === "degraded") return "En línea, con problemas";
   return "Caído";
+}
+
+// ─── Card de exportacion a .txt ──────────────────────────────────────────────
+
+/**
+ * Como viene saliendo el .txt de cada muestra.
+ *
+ * Es la tarjeta mas importante de esta pantalla: el .txt es lo unico que el
+ * laboratorio abre. Antes, si la carpeta tenia un typo o la unidad de red
+ * estaba caida, no habia forma de enterarse hasta que alguien notaba que
+ * faltaban archivos.
+ */
+function ExportCard({ status }: { status: ExportStatus }) {
+  const [rerunning, setRerunning] = useState(false);
+  const [result, setResult] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const onRerun = async () => {
+    setRerunning(true);
+    setResult(null);
+    setError(null);
+    try {
+      const r = await rerunExport();
+      setResult(
+        r.written === 0
+          ? "No había resultados para regenerar."
+          : `Se regeneraron ${r.written} archivo${r.written === 1 ? "" : "s"}` +
+              (r.failed > 0 ? `, ${r.failed} fallaron.` : "."),
+      );
+    } catch (e) {
+      setError(apiErrorMessage(e));
+    } finally {
+      setRerunning(false);
+    }
+  };
+
+  return (
+    <Card icon={<FileText className="h-5 w-5" strokeWidth={1.5} />} title="Exportación de .txt">
+      <Row label="Estado">
+        <span className="inline-flex items-center gap-2">
+          <Dot
+            className={
+              !status.enabled
+                ? "bg-text-muted"
+                : status.healthy
+                  ? "bg-normal-text"
+                  : "bg-high-text"
+            }
+          />
+          {!status.enabled
+            ? "Apagada"
+            : status.healthy
+              ? "Escribiendo bien"
+              : "No se pueden escribir los archivos"}
+        </span>
+      </Row>
+
+      {status.enabled && !status.healthy && (
+        <p className="rounded-sm border border-high-text/20 bg-high-bg/40 px-3 py-2 text-xs text-high-text">
+          <strong>Los .txt de las muestras no se están generando.</strong>{" "}
+          {status.dirError ?? status.lastError}. Revisá que la carpeta exista y que
+          esté conectada (Configuración, más abajo). Los resultados igual quedan
+          guardados: cuando la arregles, usá “Regenerar” para recuperar los
+          archivos que faltan.
+        </p>
+      )}
+
+      {status.enabled && (
+        <>
+          <Row label="Último archivo">
+            <span className="text-sm">
+              {status.lastWriteAt
+                ? formatAgo(Date.now() - new Date(status.lastWriteAt).getTime())
+                : "—"}
+            </span>
+          </Row>
+          <Row label="Archivos escritos">
+            <span className="font-mono tnum">{status.writtenSinceStart}</span>
+          </Row>
+          {status.failedSinceStart > 0 && (
+            <Row label="Fallados">
+              <span className="font-mono tnum text-high-text">{status.failedSinceStart}</span>
+            </Row>
+          )}
+
+          <div className="flex flex-wrap items-center gap-3 pt-1">
+            <button
+              onClick={onRerun}
+              disabled={rerunning}
+              className="rounded-sm border border-border px-3 py-1.5 text-sm text-text hover:border-accent hover:text-text-strong disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              {rerunning ? "Regenerando…" : "Regenerar .txt"}
+            </button>
+            <span className="text-xs text-text-muted">
+              Vuelve a escribir los .txt de los últimos 200 resultados guardados.
+            </span>
+          </div>
+          {result && <p className="text-xs text-normal-text">{result}</p>}
+          {error && <p className="text-xs text-high-text">{error}</p>}
+        </>
+      )}
+    </Card>
+  );
 }
 
 // ─── Card de actualizaciones ─────────────────────────────────────────────────
