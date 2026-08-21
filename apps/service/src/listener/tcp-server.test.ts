@@ -4,7 +4,7 @@ import { connect } from "node:net";
 import { openDb } from "../db/migrate.js";
 import { XsRepo } from "../db/repo.js";
 import { Logger } from "../logger.js";
-import { frameMllp, unframeMllp } from "../hl7/mllp.js";
+import { frameMllp, unframeMllp, VT } from "../hl7/mllp.js";
 import { TcpServer } from "./tcp-server.js";
 import { ORU_NORMAL } from "../../../../scripts/fixtures/messages.js";
 
@@ -146,4 +146,38 @@ describe("TcpServer (integracion)", () => {
       blocker.stop(true);
     }
   });
+
+  test("un frame MLLP que nunca cierra corta la conexion en vez de tumbar el proceso", async () => {
+    // Cualquiera que se conecte al 5100 puede mandar un 0x0B y despues seguir
+    // escribiendo sin cerrar el frame. Antes eso se acumulaba en memoria hasta
+    // voltear el servicio — y NSSM lo reiniciaba en loop.
+    const cerrado = await new Promise<boolean>((resolve) => {
+      const sock = connect({ host: "127.0.0.1", port });
+      const timer = setTimeout(() => {
+        sock.destroy();
+        resolve(false);
+      }, 8000);
+
+      sock.on("connect", () => {
+        sock.write(Uint8Array.from([VT])); // abre el frame...
+        const relleno = new Uint8Array(256 * 1024).fill(0x41);
+        // ...y nunca lo cierra (sin FS+CR), pasandose del tope de 1 MB.
+        for (let i = 0; i < 6; i++) sock.write(relleno);
+      });
+      sock.on("close", () => {
+        clearTimeout(timer);
+        resolve(true);
+      });
+      sock.on("error", () => {
+        clearTimeout(timer);
+        resolve(true); // ECONNRESET tambien cuenta como cierre
+      });
+    });
+
+    expect(cerrado).toBe(true);
+
+    // Y el listener sigue en pie para el proximo mensaje legitimo.
+    const ack = await sendAndAwaitAck(port, ORU_NORMAL);
+    expect(ack).toContain("MSA|AA|1001");
+  }, 15000);
 });

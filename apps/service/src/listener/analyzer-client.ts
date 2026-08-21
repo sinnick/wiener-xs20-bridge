@@ -19,6 +19,11 @@ import type { Socket } from "bun";
 
 import { MessageProcessor, MllpBuffer } from "../hl7/message-processor.js";
 import {
+  ANALYZER_CLIENT_IDLE_TIMEOUT_MS,
+  ANALYZER_CONNECT_TIMEOUT_MS,
+  ANALYZER_KEEPALIVE_IDLE_MS,
+  IDLE_SWEEP_INTERVAL_MS,
+  MAX_MLLP_FRAME_BYTES,
   RECONNECT_BACKOFF_FACTOR,
   RECONNECT_INITIAL_DELAY_MS,
   RECONNECT_MAX_DELAY_MS,
@@ -34,6 +39,12 @@ export interface AnalyzerClientOptions {
   logger: Logger;
   /** Inyectable para los tests: por defecto usa Bun.connect. */
   connectFn?: typeof Bun.connect;
+  /** Silencio maximo tolerado antes de dar la conexion por muerta. */
+  idleTimeoutMs?: number;
+  /** Cuanto esperamos a que la conexion se establezca. */
+  connectTimeoutMs?: number;
+  /** Cada cuanto corre el barrido de conexion ociosa. */
+  sweepIntervalMs?: number;
 }
 
 interface ClientState {
@@ -43,10 +54,23 @@ interface ClientState {
 export class AnalyzerClient {
   private socket: Socket<ClientState> | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private idleSweeper: ReturnType<typeof setInterval> | null = null;
   private reconnectDelayMs = RECONNECT_INITIAL_DELAY_MS;
   private stopped = true;
   /** True mientras hay un intento de conexion en vuelo. */
   private connecting = false;
+  /**
+   * Numero de intento de conexion.
+   *
+   * Un `Bun.connect` en vuelo no se puede abortar: si lo damos por vencido por
+   * timeout y despues resuelve igual, nos llega un `open` de un intento que ya
+   * dimos por muerto. Comparando la generacion descartamos ese socket zombie en
+   * vez de quedar con dos.
+   */
+  private attemptGeneration = 0;
+
+  /** Epoch ms del ultimo byte recibido (o de la apertura del socket). */
+  private lastActivityAt = 0;
 
   private connectedAt: Date | null = null;
   private totalConnections = 0;
@@ -65,12 +89,28 @@ export class AnalyzerClient {
       host: this.opts.host,
       port: this.opts.port,
     });
+    // Barrido de conexion muerta. Sin esto, un cable cortado o el equipo
+    // apagado de golpe (sin FIN) dejan el socket "vivo" para siempre: health
+    // dice ok, no reconectamos nunca, y no entra un solo resultado mas.
+    if (!this.idleSweeper) {
+      this.idleSweeper = setInterval(
+        () => this.sweepIdleConnection(),
+        this.opts.sweepIntervalMs ?? IDLE_SWEEP_INTERVAL_MS,
+      );
+    }
     void this.tryConnect();
   }
 
   stop(): void {
     this.stopped = true;
     this.clearReconnectTimer();
+    if (this.idleSweeper) {
+      clearInterval(this.idleSweeper);
+      this.idleSweeper = null;
+    }
+    // Invalidamos cualquier intento en vuelo: si resuelve despues del stop, su
+    // `open` se descarta en vez de dejar un socket huerfano.
+    this.attemptGeneration++;
     if (this.socket) {
       try {
         this.socket.end();
@@ -125,19 +165,27 @@ export class AnalyzerClient {
 
     const connect = this.opts.connectFn ?? Bun.connect;
     const peer = `${this.opts.host}:${this.opts.port}`;
+    const generation = ++this.attemptGeneration;
+    const connectTimeoutMs = this.opts.connectTimeoutMs ?? ANALYZER_CONNECT_TIMEOUT_MS;
 
     try {
-      await connect<ClientState>({
+      const attempt = connect<ClientState>({
         hostname: this.opts.host,
         port: this.opts.port,
         socket: {
-          open: (socket) => this.onOpen(socket),
+          open: (socket) => this.onOpen(socket, generation),
           data: (socket, data) => this.onData(socket, data),
           close: (socket) => this.onClose(socket),
           error: (socket, error) => this.onSocketError(socket, error),
         },
         data: { buffer: new MllpBuffer() },
       });
+
+      // Sin este timeout, una IP que existe pero descarta los paquetes (equipo
+      // apagado con la IP todavia ruteada, o un firewall en DROP) deja el
+      // intento colgado minutos, hasta que se rinde el SO. Durante todo ese
+      // rato no reintentamos ni aparece nada en el log.
+      await this.withTimeout(attempt, connectTimeoutMs, peer);
       // El handler `open` ya marco el estado conectado.
     } catch (e) {
       const message = (e as Error).message;
@@ -179,26 +227,133 @@ export class AnalyzerClient {
     }
   }
 
+  /** Rechaza si la promesa no resuelve dentro del plazo. */
+  private withTimeout<T>(promise: Promise<T>, ms: number, peer: string): Promise<T> {
+    if (ms <= 0) return promise;
+    let timer: ReturnType<typeof setTimeout>;
+    const timeout = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(
+        () => reject(new Error(`timeout de conexion a ${peer} tras ${ms}ms`)),
+        ms,
+      );
+    });
+    // El `catch` vacio evita un unhandledRejection si el connect falla despues
+    // de que ya ganamos por timeout.
+    promise.catch(() => {});
+    return Promise.race([promise, timeout]).finally(() => clearTimeout(timer)) as Promise<T>;
+  }
+
+  /**
+   * Cierra la conexion si el equipo no mando NADA en mucho tiempo.
+   *
+   * Es el equivalente de `sweepIdleConnections` de TcpServer para el lado
+   * cliente. La deteccion primaria es el keepalive de TCP (ver onOpen), pero si
+   * el SO no nos deja habilitarlo — o el peer quedo medio-abierto igual — este
+   * barrido es lo unico que evita quedarse "conectado" a un equipo que ya no
+   * esta. Al cerrar, `onClose` reprograma la reconexion sola.
+   */
+  private sweepIdleConnection(): void {
+    if (this.stopped || !this.socket) return;
+    const idleMs = Date.now() - this.lastActivityAt;
+    const limit = this.opts.idleTimeoutMs ?? ANALYZER_CLIENT_IDLE_TIMEOUT_MS;
+    if (idleMs <= limit) return;
+
+    this.opts.logger.warn("analyzer.client.idle_timeout", {
+      peer: this.peerLabel(),
+      idleMs,
+      limitMs: limit,
+      detail:
+        "El equipo no mando un solo byte en todo ese tiempo. Damos la conexion " +
+        "por muerta (cable, switch o equipo apagado sin cerrar) y reconectamos.",
+    });
+    try {
+      this.socket.end();
+    } catch {
+      // ignore
+    }
+  }
+
   // ─── Handlers de socket ─────────────────────────────────────────────────────
 
-  private onOpen(socket: Socket<ClientState>): void {
+  private onOpen(socket: Socket<ClientState>, generation: number): void {
+    // Llego tarde: este intento ya se dio por vencido (timeout) o hubo un
+    // stop()/reconfigure() mientras tanto. Lo cerramos y nos olvidamos, sino
+    // quedariamos con dos sockets contra el mismo equipo.
+    if (generation !== this.attemptGeneration || this.stopped) {
+      this.opts.logger.debug("analyzer.client.stale_socket_discarded", {
+        peer: this.peerLabel(),
+        generation,
+        currentGeneration: this.attemptGeneration,
+      });
+      try {
+        socket.end();
+      } catch {
+        // ignore
+      }
+      return;
+    }
+
     this.socket = socket;
     this.connectedAt = new Date();
+    this.lastActivityAt = Date.now();
     this.totalConnections++;
     this.lastErrorMessage = null;
     // Conexion buena: reseteamos el backoff para que una caida futura reintente
     // rapido de nuevo.
     this.reconnectDelayMs = RECONNECT_INITIAL_DELAY_MS;
+
+    // Keepalive de TCP: es la unica forma de enterarse de que el peer se murio
+    // sin avisar (cable cortado, equipo apagado de golpe) sin mandarle nada a
+    // nivel aplicacion — que en MLLP no tenemos como hacer sin arriesgarnos a
+    // confundir al equipo. Con lo que fija Bun (KEEPCNT=10, KEEPINTVL=1s), un
+    // peer muerto se detecta ~40s despues del ultimo byte.
+    let keepAliveOk = false;
+    try {
+      keepAliveOk = socket.setKeepAlive(true, ANALYZER_KEEPALIVE_IDLE_MS) !== false;
+      socket.setNoDelay(true);
+    } catch {
+      keepAliveOk = false;
+    }
+    if (!keepAliveOk) {
+      // No es fatal: queda el barrido por inactividad como respaldo. Pero
+      // conviene que se vea, porque cambia cuanto tardamos en detectar la caida.
+      this.opts.logger.warn("analyzer.client.keepalive_unavailable", {
+        peer: this.peerLabel(),
+        detail:
+          "El sistema no acepto habilitar keepalive de TCP. La deteccion de " +
+          "conexion muerta queda solo a cargo del barrido por inactividad.",
+      });
+    }
+
     this.opts.logger.info("analyzer.client.connected", {
       peer: this.peerLabel(),
       totalConnectionsSinceStart: this.totalConnections,
+      keepAlive: keepAliveOk,
     });
   }
 
   private onData(socket: Socket<ClientState>, data: Buffer): void {
     this.bytesReceived += data.length;
+    // Cualquier byte cuenta como señal de vida, incluido el heartbeat.
+    this.lastActivityAt = Date.now();
     const bytes = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
-    const { messages, controlBytes } = socket.data.buffer.push(bytes);
+    const { messages, controlBytes, overflow } = socket.data.buffer.push(bytes);
+
+    if (overflow) {
+      this.opts.logger.error("mllp.frame.too_large", {
+        peer: this.peerLabel(),
+        maxBytes: MAX_MLLP_FRAME_BYTES,
+        detail:
+          "El equipo abrio un frame MLLP y nunca lo cerro (FS+CR). Se descarto " +
+          "y se corta la conexion para no quedarnos sin memoria; reconectamos.",
+      });
+      try {
+        socket.end();
+      } catch {
+        // ignore
+      }
+      return;
+    }
 
     if (controlBytes.length > 0) {
       this.opts.logger.debug("mllp.control_bytes", {
@@ -216,10 +371,16 @@ export class AnalyzerClient {
   }
 
   private onClose(socket: Socket<ClientState>): void {
+    socket.data.buffer.reset();
+
+    // Puede ser el cierre de un socket descartado por generacion vieja. Si el
+    // socket bueno sigue vivo, no hay nada que hacer: no toca el estado ni
+    // dispara una reconexion que no hace falta.
+    if (this.socket !== null && this.socket !== socket) return;
+
     const wasConnected = this.socket !== null;
     this.socket = null;
     this.connectedAt = null;
-    socket.data.buffer.reset();
 
     if (wasConnected) {
       this.opts.logger.warn("analyzer.client.disconnected", {

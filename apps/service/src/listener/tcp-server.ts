@@ -17,7 +17,11 @@
 import type { Socket, TCPSocketListener } from "bun";
 
 import { MessageProcessor, MllpBuffer } from "../hl7/message-processor.js";
-import { CONNECTION_IDLE_TIMEOUT_MS } from "../hl7/protocol-map.js";
+import {
+  CONNECTION_IDLE_TIMEOUT_MS,
+  IDLE_SWEEP_INTERVAL_MS,
+  MAX_MLLP_FRAME_BYTES,
+} from "../hl7/protocol-map.js";
 import type { Logger } from "../logger.js";
 import type { XsRepo } from "../db/repo.js";
 
@@ -78,7 +82,7 @@ export class TcpServer {
     });
     // Barrido periodico para cerrar conexiones colgadas (equipo que abrio el
     // socket y dejo de mandar nada â€” red caida, equipo apagado a mitad, etc.).
-    this.idleSweeper = setInterval(() => this.sweepIdleConnections(), 15_000);
+    this.idleSweeper = setInterval(() => this.sweepIdleConnections(), IDLE_SWEEP_INTERVAL_MS);
     this.opts.logger.info("tcp.listener.up", {
       host: this.opts.host,
       port: this.opts.port,
@@ -215,7 +219,27 @@ export class TcpServer {
     state.lastActivityAt = Date.now();
 
     const bytes = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
-    const { messages, controlBytes } = state.buffer.push(bytes);
+    const { messages, controlBytes, overflow } = state.buffer.push(bytes);
+
+    // El emisor abrio un frame MLLP y nunca lo cerro. Cualquiera que se conecte
+    // al puerto y escriba basura llega aca, asi que cortamos: descartamos lo
+    // acumulado y le cerramos la conexion. Si es el equipo, reconecta solo.
+    if (overflow) {
+      this.opts.logger.error("mllp.frame.too_large", {
+        peer: state.peer,
+        maxBytes: MAX_MLLP_FRAME_BYTES,
+        bytesReceived: state.bytesReceived,
+        detail:
+          "Se recibio un frame MLLP sin cierre (FS+CR) que supero el tope. Se " +
+          "descarto y se cerro la conexion para no quedarnos sin memoria.",
+      });
+      try {
+        socket.end();
+      } catch {
+        // ignore
+      }
+      return;
+    }
 
     // Loguear bytes de control (sin actuar)
     if (controlBytes.length > 0) {

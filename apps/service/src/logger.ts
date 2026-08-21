@@ -13,12 +13,23 @@
  * archivo sin tocar al resto del codigo.
  */
 
-import { appendFileSync, existsSync, mkdirSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 
 import type { LogEvent } from "@xs20/shared";
 
 export type LogLevel = "debug" | "info" | "warn" | "error";
+
+/**
+ * Solo se borran archivos que matcheen EXACTAMENTE este patron.
+ *
+ * Es a proposito estricto: logDir es una carpeta del usuario y no queremos que
+ * un dia esta purga se lleve puesto algo que alguien dejo ahi al lado.
+ */
+const LOG_FILE_RE = /^service-(\d{4})-(\d{2})-(\d{2})\.log$/;
+
+/** Dias de retencion por defecto. 0 = no borrar nunca. */
+export const DEFAULT_LOG_RETENTION_DAYS = 30;
 
 const LEVEL_PRIORITY: Record<LogLevel, number> = {
   debug: 10,
@@ -34,6 +45,12 @@ export interface LoggerConfig {
   console: boolean;
   /** Tamaño max del buffer en memoria para SSE (default 1000 eventos). */
   bufferSize?: number;
+  /**
+   * Dias que se conservan los `service-YYYY-MM-DD.log`. Default 30, 0 = nunca
+   * borrar. Sin esto una PC 24/7 con logLevel=debug llena el disco: el archivo
+   * rota por dia pero nadie limpiaba los viejos.
+   */
+  retentionDays?: number;
 }
 
 type Subscriber = (event: LogEvent) => void;
@@ -48,6 +65,9 @@ export class Logger {
       mkdirSync(cfg.logDir, { recursive: true });
     }
     this.currentLogPath = this.computeLogPath();
+    // Al arrancar y despues una sola vez por dia (al rotar). No en cada linea:
+    // un readdir por evento seria carisimo con logLevel=debug.
+    this.purgeOldLogs();
   }
 
   setLevel(level: LogLevel): void {
@@ -95,7 +115,11 @@ export class Logger {
     // 1. Archivo
     try {
       const path = this.computeLogPath();
-      if (path !== this.currentLogPath) this.currentLogPath = path;
+      if (path !== this.currentLogPath) {
+        // Cambio el dia: rotamos y aprovechamos para limpiar los vencidos.
+        this.currentLogPath = path;
+        this.purgeOldLogs();
+      }
       appendFileSync(this.currentLogPath, JSON.stringify(event) + "\n");
     } catch {
       // Si el archivo falla no podemos hacer mucho — al menos no crasheamos.
@@ -132,6 +156,51 @@ export class Logger {
       String(now.getDate()).padStart(2, "0"),
     ].join("-");
     return join(this.cfg.logDir, `service-${date}.log`);
+  }
+
+  /**
+   * Borra los `service-YYYY-MM-DD.log` mas viejos que `retentionDays`.
+   *
+   * La fecha sale del NOMBRE del archivo, no del mtime: el mtime de Windows se
+   * puede correr con una copia o un backup, y el nombre es exactamente el dia
+   * que representa. Nunca borra el archivo del dia en curso.
+   *
+   * Devuelve cuantos borro (para los tests).
+   */
+  purgeOldLogs(now = new Date()): number {
+    const days = this.cfg.retentionDays ?? DEFAULT_LOG_RETENTION_DAYS;
+    if (days <= 0) return 0; // retencion desactivada
+
+    // Cutoff a medianoche local: un archivo se borra recien cuando su dia
+    // quedo enteramente fuera de la ventana.
+    const cutoff = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    cutoff.setDate(cutoff.getDate() - days);
+
+    let removed = 0;
+    try {
+      for (const name of readdirSync(this.cfg.logDir)) {
+        const m = LOG_FILE_RE.exec(name);
+        if (!m) continue; // no es nuestro: ni lo miramos
+        const fileDate = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+        if (fileDate >= cutoff) continue;
+        const full = join(this.cfg.logDir, name);
+        if (full === this.currentLogPath) continue; // jamas el de hoy
+        try {
+          unlinkSync(full);
+          removed++;
+        } catch {
+          // Archivo tomado por otro proceso (el visor de logs, el antivirus).
+          // Se reintenta manana.
+        }
+      }
+    } catch {
+      // La carpeta no se puede listar: no es motivo para voltear el servicio.
+    }
+    // Dejamos rastro de la limpieza (no recursa: el path del dia no cambio).
+    if (removed > 0) {
+      this.info("logs.purged", { filesRemoved: removed, retentionDays: days });
+    }
+    return removed;
   }
 }
 

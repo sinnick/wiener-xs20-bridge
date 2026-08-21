@@ -196,3 +196,114 @@ describe("AnalyzerClient (modo connect)", () => {
     expect(client.getStatus().connected).toBe(false);
   });
 });
+
+/**
+ * Conexion medio-abierta: el socket sigue "vivo" pero del otro lado no hay
+ * nadie. Es el modo de falla mas comun en la red de un laboratorio (alguien
+ * desenchufa el cable, se corta la luz del switch, apagan el equipo de golpe):
+ * no llega ningun FIN, asi que el socket nunca se entera y `connected` seguia
+ * diciendo que si para siempre — con /api/health en "ok" y sin reconectar jamas.
+ */
+describe("AnalyzerClient - deteccion de conexion muerta", () => {
+  let analyzer: FakeAnalyzer;
+  let client: AnalyzerClient | null = null;
+  let port: number;
+
+  beforeEach(async () => {
+    port = 25000 + Math.floor(Math.random() * 2000);
+    analyzer = new FakeAnalyzer();
+    await analyzer.listen(port);
+  });
+
+  afterEach(async () => {
+    client?.stop();
+    client = null;
+    await analyzer.close();
+  });
+
+  function makeClient(opts: { idleTimeoutMs?: number; sweepIntervalMs?: number } = {}) {
+    const repo = new XsRepo(openDb({ path: ":memory:" }));
+    return new AnalyzerClient({
+      host: "127.0.0.1",
+      port,
+      processor: new MessageProcessor({ repo, logger: silentLogger() }),
+      logger: silentLogger(),
+      ...opts,
+    });
+  }
+
+  test("una conexion muda demasiado tiempo se da por muerta y se reconecta", async () => {
+    client = makeClient({ idleTimeoutMs: 200, sweepIntervalMs: 40 });
+    client.start();
+    await waitFor(() => client!.getStatus().connected);
+    expect(analyzer.connectionCount).toBe(1);
+
+    // El analizador de mentira no manda absolutamente nada (ni heartbeat).
+    // Antes esto se sostenia para siempre; ahora el barrido lo corta.
+    await waitFor(() => client!.getStatus().totalConnectionsSinceStart >= 2, 6000);
+    expect(analyzer.connectionCount).toBeGreaterThanOrEqual(2);
+  }, 10000);
+
+  test("mientras el equipo manda datos, la conexion NO se corta", async () => {
+    client = makeClient({ idleTimeoutMs: 600, sweepIntervalMs: 40 });
+    client.start();
+    await waitFor(() => client!.getStatus().connected);
+
+    // Trafico cada 150ms durante mas de un idleTimeout completo.
+    const t0 = Date.now();
+    while (Date.now() - t0 < 1200) {
+      analyzer.push(ORU_NORMAL);
+      await new Promise((r) => setTimeout(r, 150));
+    }
+
+    expect(client.getStatus().connected).toBe(true);
+    expect(client.getStatus().totalConnectionsSinceStart).toBe(1);
+  }, 10000);
+
+  test("stop() apaga el barrido (no deja timers colgados)", async () => {
+    client = makeClient({ idleTimeoutMs: 100, sweepIntervalMs: 30 });
+    client.start();
+    await waitFor(() => client!.getStatus().connected);
+
+    client.stop();
+    const conexiones = analyzer.connectionCount;
+
+    // Si el barrido siguiera vivo, seguiria reconectando en este rato.
+    await new Promise((r) => setTimeout(r, 600));
+    expect(analyzer.connectionCount).toBe(conexiones);
+    expect(client.getStatus().connected).toBe(false);
+  }, 10000);
+});
+
+describe("AnalyzerClient - timeout de conexion", () => {
+  test("un connect que nunca resuelve no deja el cliente colgado para siempre", async () => {
+    // Una IP que existe pero descarta los paquetes (equipo apagado con la IP
+    // todavia ruteada, firewall en DROP) deja el connect en vuelo minutos. Sin
+    // timeout propio, en todo ese rato no reintentamos ni queda nada en el log.
+    const repo = new XsRepo(openDb({ path: ":memory:" }));
+    let intentos = 0;
+    const client = new AnalyzerClient({
+      host: "10.255.255.1",
+      port: 5100,
+      processor: new MessageProcessor({ repo, logger: silentLogger() }),
+      logger: silentLogger(),
+      connectTimeoutMs: 150,
+      connectFn: (() => {
+        intentos++;
+        return new Promise(() => {}); // nunca resuelve
+      }) as unknown as typeof Bun.connect,
+    });
+
+    client.start();
+    try {
+      await waitFor(() => client.getStatus().lastError !== null, 3000);
+      expect(client.getStatus().lastError).toContain("timeout");
+      expect(client.getStatus().connected).toBe(false);
+
+      // Y sigue reintentando en vez de quedarse trabado en el primer intento.
+      await waitFor(() => intentos >= 2, 5000);
+    } finally {
+      client.stop();
+    }
+  }, 15000);
+});

@@ -1,12 +1,31 @@
 -- =============================================================================
--- WIENER XS 20 BRIDGE — SQLite schema v1
+-- WIENER XS 20 BRIDGE — SQLite schema v1 (LINEA BASE — CONGELADA)
 -- Mantener sincronizado con docs/02-schema-db.md
+-- =============================================================================
+--
+-- >>> NO AGREGAR NI MODIFICAR COLUMNAS/TABLAS/INDICES EN ESTE ARCHIVO. <<<
+--
+-- Este es el schema version 1 y ya esta instalado en el laboratorio. Todo
+-- cambio posterior va como una entrada nueva en el array MIGRATIONS de
+-- db/migrate.ts, que corre con PRAGMA user_version.
+--
+-- Motivo: la app se auto-actualiza sola. En una instalacion que ya existe, el
+-- "CREATE TABLE IF NOT EXISTS" de abajo se saltea la tabla ENTERA, asi que una
+-- columna agregada aca nunca llegaria a esa PC y el codigo nuevo romperia en
+-- runtime. Ver el comentario largo en db/migrate.ts.
 -- =============================================================================
 
 PRAGMA foreign_keys = ON;
 PRAGMA journal_mode = WAL;
 PRAGMA synchronous = NORMAL;
-PRAGMA busy_timeout = 5000;
+
+-- Cuanto espera una escritura bloqueada por otro lock antes de rendirse.
+-- DEBE quedar por debajo de ACK_DEADLINE_MS (4000, ver hl7/protocol-map.ts):
+-- si la DB esta trabada (antivirus, backup, checkpoint del WAL) preferimos
+-- fallar rapido y responder un ACK negativo dentro del plazo del equipo —
+-- que el equipo puede reintentar, y el UNIQUE(message_control_id) deduplica —
+-- antes que mandar un ACK positivo tarde, que el equipo ya dio por perdido.
+PRAGMA busy_timeout = 2500;
 
 CREATE TABLE IF NOT EXISTS raw_messages (
     id                  TEXT PRIMARY KEY,

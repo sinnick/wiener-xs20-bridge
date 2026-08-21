@@ -40,6 +40,41 @@ export const ACK_DEADLINE_MS = 4000;
 // cada ~3s cuando esta ocioso, asi que 60s de silencio total = conexion colgada.
 export const CONNECTION_IDLE_TIMEOUT_MS = 60_000;
 
+// [INFERIDO] Lo mismo pero para el socket SALIENTE (modo "connect"). Va mucho
+// mas holgado que el del listener a proposito: aca la deteccion primaria es el
+// keepalive de TCP, y este barrido es solo el paracaidas para cuando el SO no
+// nos deja habilitarlo (Windows) o el peer quedo medio-abierto igual.
+//
+// Si el equipo resultara NO mandar heartbeats cuando actua de servidor, esto se
+// nota como una reconexion cada 5 minutos en el log ("analyzer.client.idle_
+// timeout" seguido de "analyzer.client.connected"). Es feo pero inofensivo:
+// reconectar cuando no hay nada en vuelo no pierde ningun mensaje. Si pasa,
+// subir este numero es el ajuste correcto.
+export const ANALYZER_CLIENT_IDLE_TIMEOUT_MS = 300_000;
+
+// Cada cuanto corre el barrido de conexiones ociosas (listener y cliente).
+export const IDLE_SWEEP_INTERVAL_MS = 15_000;
+
+// [INFERIDO] Cuanto esperamos a que `Bun.connect` resuelva antes de darlo por
+// fallido. Sin esto, una IP que existe pero se traga los paquetes (equipo
+// apagado con la IP todavia ruteada, firewall en DROP) deja el intento colgado
+// hasta el timeout del SO — minutos — y el backoff de reconexion nunca corre.
+export const ANALYZER_CONNECT_TIMEOUT_MS = 10_000;
+
+// Delay del primer probe de keepalive TCP sobre un socket ocioso. Con
+// TCP_KEEPCNT=10 y TCP_KEEPINTVL=1s (lo que fija Bun), un peer muerto se
+// detecta ~30s + 10s = 40s despues del ultimo byte.
+export const ANALYZER_KEEPALIVE_IDLE_MS = 30_000;
+
+// Tope de bytes que aceptamos acumular esperando el cierre (FS+CR) de un frame
+// MLLP. Un ORU^R01 del XS 20 con los 3 histogramas ronda los 3-5 KB, asi que
+// 1 MB es holgadisimo para cualquier mensaje legitimo.
+//
+// Sin este tope, un 0x0B sin su cierre (equipo colgado a mitad de transmision,
+// o cualquier cliente TCP que se conecte al 5100 y escriba basura) hace que el
+// buffer crezca sin limite hasta voltear el proceso por falta de memoria.
+export const MAX_MLLP_FRAME_BYTES = 1_048_576;
+
 // ─── Reconexion en modo "connect" (nosotros salimos al equipo) ───────────────
 // Cuando el XS 20 es el servidor TCP, la PC del laboratorio tiene que mantener
 // la conexion viva. El equipo se apaga todas las noches y se reinicia, asi que

@@ -5,7 +5,7 @@
  * → maneja senales para shutdown limpio.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { randomBytes } from "node:crypto";
 
@@ -45,6 +45,87 @@ function loadOrCreateApiToken(dataDir: string): string {
   return token;
 }
 
+/** Cada cuanto se reintenta un bind que fallo. */
+const BIND_RETRY_INTERVAL_MS = 15_000;
+
+interface RetryHandle {
+  /** True si el bind quedo arriba. */
+  readonly ok: boolean;
+  cancel(): void;
+}
+
+/**
+ * Levanta algo que hace bind de un puerto, sin voltear el servicio si falla.
+ *
+ * Por que esto importa tanto aca: el servicio corre bajo NSSM con
+ * `AppExit Default Restart`. Si `Bun.listen`/`Bun.serve` tiran (puerto ocupado)
+ * y dejamos que el error llegue al `main().catch` → `process.exit(1)`, NSSM nos
+ * reinicia, volvemos a fallar, y queda un loop infinito de arranques. Desde
+ * afuera se ve igual que un servicio muerto, pero sin ningun diagnostico.
+ *
+ * En vez de eso: logueamos la causa exacta y reintentamos en background. El
+ * caso tipico — el proceso anterior todavia soltando el puerto despues de una
+ * actualizacion, o un TIME_WAIT — se resuelve solo en segundos. Y si es algo
+ * permanente (otro programa en el 5100), el servicio sigue vivo, la API
+ * responde y la app puede mostrar que pasa.
+ */
+function startWithRetry(opts: {
+  label: string;
+  logger: Logger;
+  start: () => void;
+  hint: string;
+  onSuccess?: () => void;
+}): RetryHandle {
+  let timer: ReturnType<typeof setInterval> | null = null;
+  let attempts = 0;
+  let ok = false;
+
+  const attempt = (): boolean => {
+    try {
+      opts.start();
+      if (attempts > 0) {
+        opts.logger.info(`${opts.label}.bind_recovered`, { attempts });
+      }
+      opts.onSuccess?.();
+      return true;
+    } catch (e) {
+      attempts++;
+      const ctx = {
+        error: (e as Error).message,
+        attempts,
+        retryInMs: BIND_RETRY_INTERVAL_MS,
+        detail: opts.hint,
+      };
+      // El primer fallo se grita; los reintentos van a debug para no llenar el
+      // log si el puerto queda tomado por horas.
+      if (attempts === 1) opts.logger.error(`${opts.label}.bind_failed`, ctx);
+      else opts.logger.debug(`${opts.label}.bind_failed`, ctx);
+      return false;
+    }
+  };
+
+  ok = attempt();
+  if (!ok) {
+    timer = setInterval(() => {
+      if (attempt()) {
+        ok = true;
+        if (timer) clearInterval(timer);
+        timer = null;
+      }
+    }, BIND_RETRY_INTERVAL_MS);
+  }
+
+  return {
+    get ok() {
+      return ok;
+    },
+    cancel() {
+      if (timer) clearInterval(timer);
+      timer = null;
+    },
+  };
+}
+
 async function main(): Promise<void> {
   const config = resolveConfig(process.argv.slice(2));
 
@@ -57,7 +138,16 @@ async function main(): Promise<void> {
     logDir: config.logDir,
     level: config.logLevel,
     console: config.console,
+    retentionDays: config.logRetentionDays,
   });
+
+  // Lo primero: los problemas que encontro resolveConfig. Se juntan alla porque
+  // la config se resuelve antes de que exista el logger (es ella la que dice
+  // donde escribir). Antes se descartaban en silencio y el sintoma era un
+  // servicio corriendo con valores que el usuario nunca puso.
+  for (const w of config.warnings ?? []) {
+    logger.error("config.invalid", { detail: w });
+  }
 
   const startedAt = new Date();
   logger.info("service.starting", {
@@ -76,8 +166,10 @@ async function main(): Promise<void> {
     noListen: config.noListen,
   });
 
-  // DB
-  const db = openDb({ path: config.dbPath });
+  // DB. Le pasamos el logger para que la recuperacion de una base dañada y las
+  // migraciones queden registradas: son cosas que pasan una sola vez y sin
+  // rastro no hay forma de entender despues por que se vacio el historico.
+  const db = openDb({ path: config.dbPath, logger });
   const repo = new XsRepo(db);
   logger.info("db.ready", { resultCount: repo.countResults() });
 
@@ -145,6 +237,8 @@ async function main(): Promise<void> {
     logger,
   });
 
+  let tcpBind: RetryHandle | null = null;
+
   if (config.noListen) {
     logger.warn("tcp.disabled", { reason: "--no-listen flag" });
   } else if (config.connectionMode === "connect") {
@@ -157,8 +251,30 @@ async function main(): Promise<void> {
     } else {
       analyzerClient.start();
     }
+  } else if (config.tcpPort === config.httpPort) {
+    // Mismo puerto para el listener y la API: solo uno puede quedarse con el.
+    // Gana la API — es la unica forma que tiene la operadora de ver que pasa.
+    // Si arrancaramos el TCP igual (corre antes que el HTTP), le robaria el
+    // puerto a la API y el sintoma seria "la app no conecta", sin pista alguna.
+    logger.error("config.port_conflict", {
+      tcpPort: config.tcpPort,
+      httpPort: config.httpPort,
+      detail:
+        `El listener TCP y la API HTTP tienen configurado el mismo puerto ` +
+        `(${config.tcpPort}). NO se levanta el listener, para dejar la API en ` +
+        "pie. Cambiar el puerto del equipo en la app o arrancar con --port=<otro>.",
+    });
   } else {
-    tcp.start();
+    tcpBind = startWithRetry({
+      label: "tcp.listener",
+      logger,
+      start: () => tcp.start(),
+      hint:
+        `No se pudo escuchar en ${config.tcpHost}:${config.tcpPort}. Casi ` +
+        "siempre es que otro programa ya tiene ese puerto (u otra copia del " +
+        "servicio quedo corriendo). El servicio sigue vivo y reintenta solo; " +
+        "la app y los logs siguen andando para poder diagnosticar.",
+    });
   }
 
   // Chequeo de versiones nuevas contra el manifest del VPS. Lee los settings en
@@ -185,12 +301,27 @@ async function main(): Promise<void> {
     version: VERSION,
     updateChecker,
   });
-  http.start();
+  // Si el 7700 esta ocupado NO nos morimos: seria un loop de reinicios de NSSM
+  // sin diagnostico. Reintentamos en background — la causa mas probable es el
+  // proceso anterior soltando el puerto durante una actualizacion, que se
+  // resuelve en segundos — y mientras tanto el TCP sigue recibiendo y
+  // guardando resultados aunque la app no pueda mostrarlos.
+  const httpBind = startWithRetry({
+    label: "http.api",
+    logger,
+    start: () => http.start(),
+    hint:
+      `No se pudo abrir la API HTTP en el puerto ${config.httpPort}. La app no ` +
+      "va a poder conectarse hasta que se libere. Suele ser otra copia del " +
+      "servicio corriendo, o el puerto tomado por otro programa.",
+  });
   updateChecker.start();
 
   logger.info("service.started", {
     uptimeStartedAt: startedAt.toISOString(),
     apiTokenPath: join(dataDir, "config", "api-token.txt"),
+    httpListening: httpBind.ok,
+    tcpListening: tcpBind ? tcpBind.ok : false,
   });
 
   // Shutdown handlers
@@ -200,6 +331,9 @@ async function main(): Promise<void> {
     shuttingDown = true;
     logger.info("service.stopping", { signal });
     clearInterval(purgeTimer);
+    // Cortamos los reintentos de bind pendientes, sino el proceso no termina.
+    httpBind.cancel();
+    tcpBind?.cancel();
     try {
       updateChecker.stop();
     } catch {
@@ -242,5 +376,25 @@ async function main(): Promise<void> {
 
 main().catch((e) => {
   console.error("FATAL:", e);
+  // Como servicio de Windows nadie ve la consola: sin esto, un fatal durante el
+  // arranque no deja NINGUN rastro y el unico sintoma es que la app "no
+  // conecta". Escribimos aparte del log del dia porque el fatal puede ser
+  // justamente que no se pudo armar el logger.
+  try {
+    const cfg = resolveConfig(process.argv.slice(2));
+    if (!existsSync(cfg.logDir)) mkdirSync(cfg.logDir, { recursive: true });
+    const err = e as Error;
+    appendFileSync(
+      join(cfg.logDir, "service-crash.log"),
+      JSON.stringify({
+        time: new Date().toISOString(),
+        level: "error",
+        msg: "service.fatal",
+        ctx: { version: VERSION, error: err?.message ?? String(e), stack: err?.stack },
+      }) + "\n",
+    );
+  } catch {
+    // Si ni esto se puede, no queda nada por hacer.
+  }
   process.exit(1);
 });
