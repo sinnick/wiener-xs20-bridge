@@ -4,4 +4,4 @@
  *
  * Generado/actualizado por scripts/bump-version.ts — NO editar a mano.
  */
-export const VERSION = "0.1.0";
+export const VERSION = "0.2.0";
