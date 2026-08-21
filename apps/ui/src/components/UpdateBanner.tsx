@@ -44,7 +44,7 @@ export function UpdateBanner({ update }: { update: UseUpdateStatus }) {
   if (phase === "idle" || phase === "checking") return null;
 
   return (
-    <div className="border-b border-border bg-surface px-8 py-3">
+    <div className="no-print border-b border-border bg-surface px-8 py-3">
       {phase === "update-available" && (
         <BannerRow
           icon={<Download className="h-4 w-4" strokeWidth={1.5} />}

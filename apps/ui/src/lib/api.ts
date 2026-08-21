@@ -11,6 +11,9 @@
 
 import type {
   ConnectionMode,
+  ExportRerunRequest,
+  ExportRerunResponse,
+  ExportStatus,
   GetResultResponse,
   HealthResponse,
   ListResultsResponse,
@@ -237,6 +240,19 @@ export async function updateConfig(
   return (await res.json()) as UpdateConfigResponse;
 }
 
+// ─── Exportacion a .txt ──────────────────────────────────────────────────────
+
+/**
+ * Vuelve a escribir los .txt de resultados ya guardados.
+ *
+ * Sirve cuando la carpeta destino estuvo mal configurada: los resultados nunca
+ * se perdieron (estan en la base), pero los archivos de esos dias no existen.
+ * Sin argumentos regenera los ultimos 200.
+ */
+export function rerunExport(params: ExportRerunRequest = {}): Promise<ExportRerunResponse> {
+  return apiPost<ExportRerunResponse>("/api/export/rerun", params);
+}
+
 // ─── Actualizaciones ─────────────────────────────────────────────────────────
 
 export function getUpdateStatus(): Promise<UpdateStatusResponse> {
@@ -320,6 +336,8 @@ let streamState: StreamState = "connecting";
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let reconnectAttempts = 0;
 let hadDropped = false;
+/** Si nunca conectamos, un fallo es "todavia conectando", no "se corto". */
+let everOpened = false;
 const subscribers = new Set<StreamHandlers>();
 
 function setStreamState(s: StreamState): void {
@@ -339,6 +357,7 @@ function connectStream(): void {
 
   source.onopen = () => {
     reconnectAttempts = 0;
+    everOpened = true;
     setStreamState("open");
     if (hadDropped) {
       hadDropped = false;
@@ -362,7 +381,9 @@ function connectStream(): void {
     source.close();
     if (es === source) es = null;
     hadDropped = true;
-    setStreamState("reconnecting");
+    // Si nunca llegamos a conectar (el servicio todavia esta arrancando)
+    // seguimos diciendo "conectando": nunca hubo una conexion que perder.
+    setStreamState(everOpened ? "reconnecting" : "connecting");
     scheduleReconnect();
   };
 }
@@ -399,6 +420,9 @@ export function subscribeLogs(handlers: StreamHandlers): () => void {
 
 export type {
   ConnectionMode,
+  ExportRerunRequest,
+  ExportRerunResponse,
+  ExportStatus,
   ResultSummary,
   GetResultResponse,
   HealthResponse,

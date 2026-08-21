@@ -144,6 +144,39 @@ const EVENTS: Record<string, EventDescriptor> = {
       return `No se pudo exportar el .txt${id ? ` de la muestra ${id}` : ""}: ${err}`;
     },
   },
+  "export.dir_ok": {
+    text: (c) => `La carpeta de exportación está lista: ${str(c.dir) ?? ""}`,
+    noise: true,
+  },
+  "export.dir_disabled": {
+    text: () => "La exportación de .txt está apagada (no hay carpeta configurada)",
+    noise: true,
+  },
+  "export.dir_unavailable": {
+    text: (c) =>
+      `No se puede escribir en la carpeta de exportación ${str(c.dir) ?? ""}: ` +
+      `${str(c.error) ?? "error desconocido"}. Los .txt no se van a generar.`,
+  },
+  "export.unexpected_unit": {
+    text: (c) =>
+      `El equipo mandó ${str(c.param) ?? "un parámetro"} en una unidad inesperada ` +
+      `(${str(c.unit) ?? "?"}): revisá la configuración de unidades del analizador`,
+  },
+  "export.rerun_done": {
+    text: (c) => {
+      const escritos = str(c.written) ?? "0";
+      const fallados = str(c.failed);
+      return (
+        `Se regeneraron ${escritos} archivos .txt` +
+        (fallados && fallados !== "0" ? ` (${fallados} fallaron)` : "")
+      );
+    },
+  },
+  "export.rerun_dir_unavailable": {
+    text: (c) =>
+      `No se pudieron regenerar los .txt: la carpeta ${str(c.dir) ?? ""} no acepta ` +
+      `escrituras (${str(c.error) ?? "error desconocido"})`,
+  },
 
   // ── Conexion con el equipo (modo "el equipo se conecta a nosotros") ──
   "tcp.connection.opened": { text: () => "El equipo se conectó" },
@@ -199,35 +232,12 @@ const EVENTS: Record<string, EventDescriptor> = {
     noise: true,
   },
 
-  "export.dir_ok": { text: () => "La carpeta de exportación quedó lista" },
-  "export.dir_disabled": {
-    text: () => "No hay carpeta de exportación configurada: no se generan .txt",
-  },
-  "export.dir_unavailable": {
-    text: () => "No se puede escribir en la carpeta de exportación",
-  },
+  // Las demas claves de export.* ya estan traducidas mas arriba, en el bloque
+  // de exportacion de .txt.
   "export.failed": {
     text: (c) => {
       const id = str(c.sampleId);
       return `No se pudo exportar el .txt${id ? ` de la muestra ${id}` : ""}`;
-    },
-  },
-  "export.rerun_done": {
-    text: (c) => {
-      const written = str(c.written);
-      const failed = str(c.failed);
-      const base = `Se volvieron a generar ${written ?? "los"} .txt`;
-      return failed && failed !== "0" ? `${base} (${failed} fallaron)` : base;
-    },
-  },
-  "export.rerun_dir_unavailable": {
-    text: () => "No se pudieron regenerar los .txt: la carpeta no está disponible",
-  },
-  "export.unexpected_unit": {
-    text: (c) => {
-      const p = str(c.param);
-      const u = str(c.unit);
-      return `El equipo mandó ${p ?? "un parámetro"} en una unidad inesperada${u ? ` (${u})` : ""}`;
     },
   },
 
