@@ -5,8 +5,9 @@
 Desde la PC del laboratorio:
 
 1. Descargar el instalador de la última versión:
-   **https://github.com/sinnick/wiener-xs20-bridge/releases/latest**
-   (el archivo `wiener-xs20-bridge_X.Y.Z_x64-setup.exe`).
+   **https://sinnick.dev/wiener/update/**
+   (el archivo `wiener-xs20-bridge_X.Y.Z_x64-setup.exe` con el número de
+   versión más alto).
 
 2. Ejecutarlo. Como el instalador no está firmado, Windows SmartScreen puede
    mostrar "Windows protegió tu PC": tocar **"Más información" → "Ejecutar de

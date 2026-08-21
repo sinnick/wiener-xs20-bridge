@@ -155,7 +155,7 @@ una descarga).
 
 #### `POST /api/update/check`
 
-Fuerza un chequeo contra GitHub Releases ahora (además del periódico cada 6 h)
+Fuerza un chequeo del manifest del VPS ahora (además del periódico cada 6 h)
 y devuelve el status resultante. Con `updateCheckEnabled: false` no consulta.
 
 #### `POST /api/update/download`

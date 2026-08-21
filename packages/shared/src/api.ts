@@ -85,7 +85,7 @@ export interface ServiceConfig {
   rawRetentionDays: number;
   /** Carpeta donde escribir el .txt por muestra al recibir. "" = deshabilitado. */
   exportDir: string;
-  /** Si true, el servicio chequea GitHub Releases buscando versiones nuevas. */
+  /** Si true, el servicio chequea el manifest del VPS buscando versiones nuevas. */
   updateCheckEnabled: boolean;
 }
 
@@ -160,7 +160,8 @@ export interface HealthResponse {
 }
 
 // ─── Actualizaciones ─────────────────────────────────────────────────────────
-// El servicio chequea GitHub Releases periodicamente. La UI hace polling de
+// El servicio chequea el manifest publicado en el VPS periodicamente (ver
+// apps/service/src/update/update-checker.ts). La UI hace polling de
 // GET /api/update/status y muestra un banner cuando hay version nueva.
 // Ver docs/12-actualizaciones.md.
 

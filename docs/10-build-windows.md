@@ -1,134 +1,174 @@
-# Compilar la app de escritorio en Windows (.exe)
+# 10 — Compilar y publicar la app de Windows
 
-## Publicar una versión (GitHub Releases)
+El instalador se compila **en la Mac**, cruzando a Windows. No hace falta una PC
+con Windows ni GitHub Actions: `bun run release` hace todo (compilar, calcular
+el sha256, subir al VPS) en un solo comando.
 
-La forma oficial de distribuir el instalador es una **GitHub Release** disparada
-por un tag `vX.Y.Z`:
+---
 
-```bash
-bun run bump 0.2.0        # sincroniza la version en todo el monorepo
-git add -A && git commit -m "v0.2.0"
-git tag v0.2.0
-git push && git push --tags
-```
-
-El push del tag dispara `.github/workflows/release.yml`, que corre typecheck y
-tests, compila todo, verifica que el tag coincida con la versión de
-`package.json`, y publica en Releases:
-
-- `wiener-xs20-bridge_0.2.0_x64-setup.exe` — el instalador NSIS
-- `SHA256SUMS.txt` — hash para verificar la descarga
-
-La URL estable de la última versión es
-`https://github.com/sinnick/wiener-xs20-bridge/releases/latest`. El repo es
-público, así que el laboratorio puede descargar el instalador sin cuenta de
-GitHub. Además el auto-update de la app consulta esa misma Release (ver
-`docs/12-actualizaciones.md`).
-
-**Importante**: la versión se cambia SOLO con `bun run bump` — sincroniza los
-`package.json` del monorepo, `Cargo.toml` y `apps/service/src/version.ts`. Los
-instaladores ya no se commitean al repo.
-
-## Build de prueba (GitHub Actions)
-
-Cada push a `main` (y también manualmente via `workflow_dispatch`) dispara el
-workflow `.github/workflows/build-windows.yml` en un runner `windows-latest`,
-que genera el instalador NSIS y lo sube como artifact `wiener-xs20-setup-nsis`
-(sirve para smoke-tests; expira a los 90 días y requiere login para bajarlo).
+## Publicar una versión (el camino normal)
 
 ```bash
-gh run download <run-id> -n wiener-xs20-setup-nsis -D ./dist-windows
+bun run bump 0.2.0            # sincroniza la version en todo el monorepo
+git commit -am "v0.2.0"
+bun run release
 ```
 
-Podés ver el `<run-id>` con `gh run list --workflow=build-windows.yml`, o entrar
-a la pestaña "Actions" del repo en GitHub.
+`bun run release` (`scripts/release.ts`) hace, en orden:
 
-No necesitás tener Windows, Rust ni Visual C++ Build Tools instalados en tu
-máquina para nada de esto. La sección siguiente ("Compilar" en adelante) queda
-como método manual / fallback, por si necesitás compilar localmente en Windows
-(por ejemplo para debug).
+1. **Chequeos previos** — el árbol de git tiene que estar limpio, la versión
+   tiene que estar sincronizada en los `package.json`, el `Cargo.toml` y
+   `apps/service/src/version.ts`, ser **≥ 0.2.0** y ser mayor a la ya publicada
+   en el VPS.
+2. **typecheck + tests** de todo el monorepo.
+3. **Compila el servicio** para los dos targets de Windows y copia los dos
+   binarios a `apps/ui/src-tauri/binaries/` (esa carpeta está gitignoreada: sin
+   este paso, en un clone limpio el build de Tauri falla).
+4. **Compila el instalador NSIS** cruzando macOS → Windows con `cargo-xwin`.
+5. **Empaqueta**: renombra el instalador a un nombre estable sin espacios,
+   calcula el `sha256` y escribe `latest.json` + `SHA256SUMS.txt` en
+   `release-dist/`.
+6. **Sube al VPS por rsync**: primero el instalador, después el manifest (nunca
+   al revés: un chequeo justo en el medio vería un `latest.json` apuntando a un
+   `.exe` que todavía no existe).
+7. **Verifica** que la URL pública devuelva el manifest nuevo y que el `.exe`
+   responda.
 
-## Build manual (fallback)
+Después de eso, las instalaciones existentes ven la versión nueva en su próximo
+chequeo (máximo 6 h) o al instante con **Estado → Actualizaciones → Buscar
+ahora**. Ver `docs/12-actualizaciones.md`.
 
-Esta guía es para generar el instalador Windows del Wiener XS 20 Bridge desde tu
-PC. Todo el código ya está listo; esto es solo el paso de compilación final, que
-sale limpio en Windows con Rust moderno (unos 5-10 min la primera vez).
+> **La versión mínima publicable es 0.2.0.** La instalación que corre hoy en el
+> laboratorio es la **0.1.0**, y el auto-update solo dispara con una versión
+> *estrictamente mayor*. Un manifest que anuncie 0.1.0 no muestra el banner
+> nunca. El script lo verifica y aborta.
 
-> **Por qué se compila acá y no vino pre-compilado:** Tauri genera el ejecutable
-> nativo con el toolchain del sistema operativo destino. Un `.exe` de Windows se
-> compila en Windows. Además, en Windows Tauri usa el **WebView2** que Windows 11
-> ya trae — no necesita las librerías de Linux (GTK/WebKit), así que el build es
-> mucho más simple que en Linux.
+### Variantes
 
-## 1. Requisitos (una sola vez)
+```bash
+bun run release --no-deploy   # compila y deja todo en release-dist/, no sube nada
+bun run release --skip-tests  # itera rapido; NO usar para publicar de verdad
+```
 
-Instalá, en este orden:
+### Configuración del deploy (`.release.env`)
 
-1. **Microsoft C++ Build Tools**
-   https://visualstudio.microsoft.com/visual-cpp-build-tools/
-   Al instalar, tildá "Desarrollo para el escritorio con C++".
+Las credenciales del VPS **no** van al repo. El script las lee de variables de
+entorno o de un archivo `.release.env` en la raíz (gitignoreado, formato
+`CLAVE=valor`):
 
-2. **WebView2 Runtime** — Windows 11 ya lo trae. Si estás en Windows 10:
-   https://developer.microsoft.com/microsoft-edge/webview2/
+```bash
+# .release.env
+RELEASE_SSH_TARGET=usuario@sinnick.dev
+RELEASE_REMOTE_DIR=/var/www/sinnick.dev/wiener/update
 
-3. **Rust** (via rustup):
-   https://www.rust-lang.org/tools/install
-   Descargá `rustup-init.exe`, corrélo, elegí la opción por defecto (1).
-   Después de instalar, abrí una terminal nueva y verificá:
-   ```
-   rustc --version
-   cargo --version
-   ```
+# opcionales
+# RELEASE_SSH_PORT=22
+# RELEASE_SSH_KEY=~/.ssh/id_ed25519
+# RELEASE_BASE_URL=https://sinnick.dev/wiener/update/
+```
 
-4. **Bun** (si no lo tenés ya):
-   ```powershell
-   powershell -c "irm bun.sh/install.ps1 | iex"
-   ```
+| Variable | Obligatoria | Qué es |
+| --- | --- | --- |
+| `RELEASE_SSH_TARGET` | sí | `usuario@host` del VPS, como se lo pasarías a `ssh` |
+| `RELEASE_REMOTE_DIR` | sí | Ruta absoluta de la carpeta del docroot donde viven `latest.json` y los instaladores |
+| `RELEASE_SSH_PORT` | no (22) | Puerto SSH |
+| `RELEASE_SSH_KEY` | no | Clave privada, si no es la del `~/.ssh/config` |
+| `RELEASE_BASE_URL` | no | URL pública de esa carpeta. Default `https://sinnick.dev/wiener/update/`. Es la que se escribe en el `latest.json` |
 
-## 2. Compilar
+Si falta alguna de las obligatorias, el script aborta explicando exactamente qué
+definir. Se supone que el acceso SSH es por clave (sin contraseña interactiva).
 
-Desde la raíz del repo:
+---
 
-```powershell
-# 1. Instalar dependencias del monorepo
-bun install
+## Requisitos en la Mac (una sola vez)
 
-# 2. El CLI de Tauri v1 ya viene como devDep de apps/ui (@tauri-apps/cli, binario
-#    precompilado). Se usa con `bun run tauri`. NO hace falta `cargo install tauri-cli`
-#    (compila el CLI desde fuente — lento y frágil). Si preferís el de cargo:
-#    cargo install tauri-cli --version "^1.6"
+```bash
+brew install rustup llvm lld makensis
+rustup-init                                  # toolchain estable
+rustup target add x86_64-pc-windows-msvc     # target de Windows
+cargo install cargo-xwin                     # baja el SDK de Windows solo
+```
 
-# 3. Compilar el servicio a .exe (lo necesita la app para lanzarlo)
-#    Target "baseline": sin AVX2, para que corra en CPUs viejas (pre-2013) y
-#    bajo la emulacion x64 de Windows-on-ARM.
-cd apps\service
-bun build src\main.ts --compile --target=bun-windows-x64-baseline --outfile dist\xs20-service.exe
-cd ..\..
+- **rustup / cargo** — el compilador.
+- **`x86_64-pc-windows-msvc`** — el target al que cruzamos.
+- **cargo-xwin** — baja y cachea los headers y libs del Windows SDK
+  (`~/Library/Caches/cargo-xwin`) para poder linkear sin Visual Studio. La
+  primera corrida se toma unos minutos bajándolos.
+- **LLVM + lld** — `clang-cl` y `lld-link`, que son el compilador y el linker
+  que usa cargo-xwin.
+- **makensis** — arma el instalador NSIS. Sin esto el build compila el `.exe`
+  pero no genera el instalador.
 
-# 4. Compilar la app de escritorio (esto genera el instalador)
-cd apps\ui
-bun run tauri build
+El CLI de Tauri viene como devDep de `apps/ui` (`@tauri-apps/cli` pineado en
+`1.6.3`, binario precompilado); se usa con `bunx tauri`. **No** hace falta
+`cargo install tauri-cli`.
+
+`scripts/release.ts` arma el `PATH` con los directorios de Homebrew, así que no
+hace falta tenerlos exportados en el shell.
+
+### Compilar a mano (sin el script)
+
+```bash
+# 1. Servicio, los dos targets
+cd apps/service
+bun run build:windows           # bun-windows-x64-baseline (sin AVX2)
+bun run build:windows:arm64     # bun-windows-arm64
+cd ../..
+
+# 2. Los binarios tienen que estar en los resources de Tauri
+mkdir -p apps/ui/src-tauri/binaries
+cp apps/service/dist/xs20-service.exe       apps/ui/src-tauri/binaries/
+cp apps/service/dist/xs20-service-arm64.exe apps/ui/src-tauri/binaries/
+
+# 3. Instalador
+cd apps/ui
+PATH="/opt/homebrew/opt/rustup/bin:$HOME/.cargo/bin:/opt/homebrew/opt/llvm/bin:/opt/homebrew/opt/lld/bin:$PATH" \
+  bunx tauri build --runner cargo-xwin --target x86_64-pc-windows-msvc
 ```
 
 El instalador queda en:
 
 ```
-apps\ui\src-tauri\target\release\bundle\nsis\Wiener XS 20_<version>_x64-setup.exe
+apps/ui/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/Wiener XS 20_<version>_x64-setup.exe
 ```
 
-## 3. Qué empaqueta el instalador
+**Ojo con el path**: al cruzar con `--target`, el bundle sale bajo
+`target/<triple>/release/bundle/`, **no** bajo `target/release/bundle/` (eso es
+solo cuando se compila para el sistema donde corre el comando). `bun run
+tauri:build` a secas, en la Mac, compila un bundle **de macOS** — no sirve.
 
-El bundle NSIS usa un template propio (`src-tauri\nsis\installer.nsi`, fork del
-template de Tauri v1.6.3 con bloques marcados `XS20 CUSTOM`) y lleva como
-recursos `xs20-service.exe`, `nssm.exe` y los scripts
-`install-service.ps1` / `uninstall-service.ps1` (`src-tauri\windows\`). Al
-instalar: detiene el servicio si existía, copia los archivos, registra
-**WienerXS20Service** con NSSM (auto-arranque + auto-restart), crea la regla de
-firewall y lo arranca. Ver `docs/07-instalacion-windows.md`.
+---
+
+## Qué empaqueta el instalador
+
+Un solo instalador **x64** (nativo en PCs x64, emulado en Windows-on-ARM) que
+lleva como recursos:
+
+| Archivo | Para qué |
+| --- | --- |
+| `xs20-service.exe` | Servicio, target `bun-windows-x64-baseline` (sin AVX2, corre en CPUs pre-2013 y bajo la emulación x64) |
+| `xs20-service-arm64.exe` | Servicio, target `bun-windows-arm64` (nativo en Windows on ARM) |
+| `nssm.exe` | Registra el servicio de Windows |
+| `install-service.ps1` / `uninstall-service.ps1` | Alta y baja del servicio |
+
+**Qué binario se usa**: lo decide `install-service.ps1` al instalar, leyendo la
+arquitectura **nativa** de la máquina del registro
+(`HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment` →
+`PROCESSOR_ARCHITECTURE`). No alcanza con `$env:PROCESSOR_ARCHITECTURE`: adentro
+de un proceso emulado esa variable dice `AMD64` aunque la PC sea ARM64. En ARM64
+registra el binario ARM64; en cualquier otro caso, el baseline. El mismo criterio
+usa `spawn_service()` de `src-tauri/src/main.rs` para el camino de fallback
+(cuando no hay servicio de Windows registrado, por ejemplo en dev).
+
+El bundle NSIS usa un template propio (`src-tauri/nsis/installer.nsi`, fork del
+template de Tauri v1.6.3 con bloques marcados `XS20 CUSTOM`). Al instalar:
+detiene el servicio si existía, mata los dos posibles procesos del servicio,
+copia los archivos, registra **WienerXS20Service** con NSSM (auto-arranque +
+auto-restart), crea la regla de firewall y lo arranca. Ver
+`docs/07-instalacion-windows.md`.
 
 La app detecta al abrir si el servicio ya corre (sonda al puerto 7700) y en ese
-caso no lanza un proceso hijo propio; sin servicio registrado (por ejemplo en
-dev o macOS) lo lanza como hijo y lo cierra al salir.
+caso no lanza un proceso hijo propio.
 
 > **Fork del template NSIS**: `@tauri-apps/cli` está pineado a `1.6.3` para que
 > el template no drifte respecto del bundler. Si se bumpea el CLI, hay que
@@ -136,27 +176,72 @@ dev o macOS) lo lanza como hijo y lo cierra al salir.
 > (`tooling/bundler/src/bundle/windows/templates/installer.nsi` en el repo de
 > Tauri) y re-aplicar los bloques `XS20 CUSTOM`.
 
+---
+
+## Qué hay que tener configurado en el VPS
+
+El auto-update se sirve como archivos estáticos desde
+`https://sinnick.dev/wiener/update/`. Hoy esa ruta cae en el catch-all de la
+home (devuelve el HTML del sitio con un 200), así que hay que agregarle a nginx
+un bloque que la sirva como carpeta. La configuración completa, con el porqué de
+cada línea, está en **`docs/12-actualizaciones.md` → "Qué configurar en el
+VPS"**.
+
+---
+
 ## Si algo falla
 
-- **"link.exe not found"** → faltan los C++ Build Tools (paso 1.1).
-- **"error: Microsoft Visual C++ ... required"** → mismo tema, reinstalá los Build Tools.
-- **La app abre pero se ve en blanco** → falta el WebView2 Runtime (paso 1.2).
-- **"cargo: command not found"** → cerrá y reabrí la terminal después de instalar Rust.
-- **`ring`/`zstd-sys` fallan con "Acceso denegado" o cc-rs no encuentra el compilador**
-  → hay una variable de entorno `CC` apuntando a algo que no es un compilador C
-  (ver `echo $env:CC`). Rust la usa para compilar deps nativas y explota. Solución:
-  `Remove-Item Env:\CC` (temporal) o borrarla del entorno de usuario (permanente):
+- **`makensis: command not found`** o el build termina sin generar el `-setup.exe`
+  → `brew install makensis`.
+- **`lld-link: command not found` / `clang-cl not found`** → falta LLVM o lld, o
+  el `PATH` no los tiene: `brew install llvm lld` y usar el `PATH` de arriba.
+- **`error: linker 'link.exe' not found`** → se está compilando sin
+  `--runner cargo-xwin`. El runner es el que sustituye el linker de MSVC.
+- **cargo-xwin se cuelga bajando el SDK** → la primera corrida baja ~1 GB a
+  `~/Library/Caches/cargo-xwin`. Se puede borrar esa carpeta para forzar un
+  redownload limpio.
+- **`path matching binaries/xs20-service-arm64.exe not found`** → falta compilar
+  el servicio o copiarlo a `src-tauri/binaries/` (pasos 1 y 2 de "compilar a
+  mano"). `bun run release` lo hace solo.
+- **El instalador sale pero la app abre en blanco en la PC** → falta el WebView2
+  Runtime (Windows 11 ya lo trae; en Windows 10 el instalador lo baja solo con
+  `embedBootstrapper`).
+- **SmartScreen al instalar** → el instalador no está firmado. "Más información →
+  Ejecutar de todas formas". El sha256 publicado permite verificar el archivo.
+
+---
+
+## Compilar desde una PC con Windows (fallback)
+
+Si alguna vez hace falta compilar en Windows (debug de algo específico del
+sistema), los requisitos son: Microsoft C++ Build Tools ("Desarrollo para el
+escritorio con C++"), WebView2 Runtime, Rust vía rustup, y Bun. Después:
+
+```powershell
+bun install
+cd apps\service
+bun run build:windows
+bun run build:windows:arm64
+cd ..\..
+mkdir apps\ui\src-tauri\binaries -Force
+copy apps\service\dist\xs20-service.exe apps\ui\src-tauri\binaries\
+copy apps\service\dist\xs20-service-arm64.exe apps\ui\src-tauri\binaries\
+cd apps\ui
+bun run tauri build
+```
+
+Ahí sí el bundle sale en `src-tauri\target\release\bundle\nsis\`. La publicación
+(sha256 + `latest.json` + subida) hay que hacerla igual desde la Mac con
+`bun run release`, o a mano.
+
+Problemas conocidos en Windows:
+
+- **"link.exe not found"** → faltan los C++ Build Tools.
+- **`ring`/`zstd-sys` fallan con "Acceso denegado"** → hay una variable de
+  entorno `CC` apuntando a algo que no es un compilador C. Solución:
+  `Remove-Item Env:\CC`, o borrarla del entorno de usuario:
   ```powershell
   [Environment]::SetEnvironmentVariable("CC", $null, "User")
   ```
-  Esto ya pasó en la PC del laboratorio (`CC` apuntaba a `~\.local\bin`) y se
-  eliminó del entorno de usuario el 2026-07-29.
-- **Warnings de Rust al compilar** → normales, ignorables mientras diga
-  `Finished` al final.
-
-## Verificado
-
-El crate Rust del shell (`src-tauri/src/main.rs`) fue compilado y ejecutado
-durante el desarrollo: la app arranca, lanza el servicio, el servicio levanta la
-API en el puerto 7700 y la UI se conecta. El único paso que resta hacer en tu
-máquina es la compilación al formato Windows.
+  Ya pasó en la PC del laboratorio (`CC` apuntaba a `~\.local\bin`) y se eliminó
+  el 2026-07-29.

@@ -72,8 +72,8 @@ para cómo determinar en qué modo está tu equipo.
   aplicados en caliente (sin reiniciar el servicio).
 - **Tauri**: ✅ corre en Windows 11 real. El crate Rust compila y la app abre la
   ventana nativa, lanza el servicio, lee el token (`withGlobalTauri`) y la API
-  responde. Solo falta compilar el instalador `.msi/.nsis` — ver
-  `docs/10-build-windows.md`.
+  responde. El instalador NSIS se compila desde la Mac con `bun run release`
+  — ver `docs/10-build-windows.md`.
 
 ## Quickstart (desarrollo, sin equipo físico)
 
@@ -111,13 +111,17 @@ bun run typecheck # shared + service + ui + scripts
 ## Build
 
 ```bash
-# Servicio → .exe de Windows
+# Servicio → .exe de Windows (x64 baseline y ARM64)
 bun run build:service:windows        # → apps/service/dist/xs20-service.exe
 
-# App de escritorio → instalador Windows (correr en Windows)
-# Ver docs/10-build-windows.md para el paso a paso.
-cd apps/ui && cargo tauri build
+# Todo junto: compila, calcula el sha256 y publica en el VPS.
+# Cruza macOS → Windows con cargo-xwin; no hace falta una PC con Windows.
+bun run bump 0.2.0 && git commit -am "v0.2.0"
+bun run release                      # --no-deploy para no subir nada
 ```
+
+El paso a paso, los requisitos del toolchain y las variables de `.release.env`
+están en [`docs/10-build-windows.md`](docs/10-build-windows.md).
 
 ## Documentación
 
@@ -130,7 +134,9 @@ cd apps/ui && cargo tauri build
 - [`docs/07-instalacion-windows.md`](docs/07-instalacion-windows.md) — Instalar el servicio con NSSM.
 - [`docs/08-quickstart-linux.md`](docs/08-quickstart-linux.md) — Quickstart en Linux.
 - [`docs/09-ui-tauri.md`](docs/09-ui-tauri.md) — La UI y su arquitectura.
-- [`docs/10-build-windows.md`](docs/10-build-windows.md) — **Compilar el instalador Windows.**
+- [`docs/10-build-windows.md`](docs/10-build-windows.md) — **Compilar y publicar el instalador Windows.**
+- [`docs/11-exportacion-txt.md`](docs/11-exportacion-txt.md) — Exportación de resultados a `.txt`.
+- [`docs/12-actualizaciones.md`](docs/12-actualizaciones.md) — Actualizaciones automáticas (manifest y VPS).
 
 ## Cuando llegue el equipo físico
 
