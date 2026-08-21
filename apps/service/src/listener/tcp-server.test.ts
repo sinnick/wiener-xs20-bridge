@@ -151,27 +151,50 @@ describe("TcpServer (integracion)", () => {
     // Cualquiera que se conecte al 5100 puede mandar un 0x0B y despues seguir
     // escribiendo sin cerrar el frame. Antes eso se acumulaba en memoria hasta
     // voltear el servicio — y NSSM lo reiniciaba en loop.
+    // Se bombea de a 64 KB cediendo el event loop entre chunk y chunk, en vez
+    // de tirar 1.5 MB de una: un write() grande queda en el buffer local del
+    // cliente si el socket no drena, el servidor nunca ve pasar el tope y el
+    // test falla por timeout cuando la maquina esta cargada.
+    const CHUNK = 64 * 1024;
+    const TOPE_SERVIDOR = 1024 * 1024;
+    const MAX_A_ENVIAR = TOPE_SERVIDOR * 3; // margen sobrado sobre el tope
     const cerrado = await new Promise<boolean>((resolve) => {
       const sock = connect({ host: "127.0.0.1", port });
+      const relleno = new Uint8Array(CHUNK).fill(0x41);
+      let enviado = 0;
+      let vivo = true;
+
+      const terminar = (valor: boolean) => {
+        if (!vivo) return;
+        vivo = false;
+        clearTimeout(timer);
+        resolve(valor);
+      };
       const timer = setTimeout(() => {
         sock.destroy();
-        resolve(false);
-      }, 8000);
+        terminar(false);
+      }, 12000);
+
+      // ...y nunca lo cierra (sin FS+CR), hasta pasarse del tope del servidor.
+      const bombear = () => {
+        if (!vivo || enviado >= MAX_A_ENVIAR) return;
+        const sinBackpressure = sock.write(relleno);
+        enviado += CHUNK;
+        if (sinBackpressure) setImmediate(bombear); // si no, esperamos "drain"
+      };
 
       sock.on("connect", () => {
         sock.write(Uint8Array.from([VT])); // abre el frame...
-        const relleno = new Uint8Array(256 * 1024).fill(0x41);
-        // ...y nunca lo cierra (sin FS+CR), pasandose del tope de 1 MB.
-        for (let i = 0; i < 6; i++) sock.write(relleno);
+        bombear();
       });
-      sock.on("close", () => {
-        clearTimeout(timer);
-        resolve(true);
-      });
-      sock.on("error", () => {
-        clearTimeout(timer);
-        resolve(true); // ECONNRESET tambien cuenta como cierre
-      });
+      sock.on("drain", bombear);
+      // "end" es el que importa: el servidor corta con socket.end(), que es un
+      // cierre a medias (manda FIN pero sigue leyendo). El cliente lo ve como
+      // "end"; "close" recien llega cuando tambien cierra su lado, y si seguimos
+      // escribiendo puede no llegar nunca.
+      sock.on("end", () => terminar(true));
+      sock.on("close", () => terminar(true));
+      sock.on("error", () => terminar(true)); // ECONNRESET tambien es un cierre
     });
 
     expect(cerrado).toBe(true);
