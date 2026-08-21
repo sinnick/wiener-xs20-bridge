@@ -96,7 +96,9 @@ nuevo no se puede caer del archivo por olvido.
   notarse.
 - **Re-corridas**: si vuelve a entrar la misma muestra, el archivo se pisa con
   el resultado más nuevo (lo viejo sigue en la base). Un mensaje duplicado
-  (mismo MSH-10) no re-escribe nada.
+  (mismo MSH-10) no re-escribe nada. Ojo: si el .txt está abierto en Excel,
+  Windows lo bloquea y la re-escritura falla — aparece en el estado como
+  cualquier otro fallo, y se resuelve cerrando el archivo y regenerándolo.
 - **Escritura atómica**: primero se escribe un temporal en la misma carpeta, se
   baja a disco (fsync) y recién ahí se renombra sobre el destino. Si se corta la
   luz o se cae la unidad de red a mitad, el archivo anterior queda intacto y
