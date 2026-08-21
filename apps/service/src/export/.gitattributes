@@ -1,0 +1,4 @@
+# Los .txt de fixtures son el formato exacto que espera el laboratorio: fines
+# de linea CRLF. Sin esto, un checkout en Windows (autocrlf) los reescribe y el
+# test de golden file compara contra un archivo que ya no es el formato real.
+fixtures/*.txt -text

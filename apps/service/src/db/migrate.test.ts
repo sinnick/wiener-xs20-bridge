@@ -144,6 +144,75 @@ describe("openDb - recuperacion de base corrupta", () => {
   });
 });
 
+describe("openDb - una migracion que falla NO se confunde con corrupcion", () => {
+  /**
+   * Migracion que anda en una base vacia pero revienta contra datos reales:
+   * un UNIQUE que las filas que ya existen violan. Es el caso tipico de una
+   * migracion que pasa en desarrollo y falla en el laboratorio.
+   */
+  const migracionRota: Migration[] = [
+    {
+      version: 2,
+      name: "rota-contra-datos-reales",
+      up: (d) => d.exec("CREATE UNIQUE INDEX idx_tipo ON raw_messages(message_type)"),
+    },
+  ];
+
+  test("la base sana NO se aparta y el historico queda intacto", () => {
+    const dir = tmpDir();
+    const dbPath = join(dir, "db", "xs20.sqlite");
+    const inicial = openDb({ path: dbPath });
+    // Dos mensajes del mismo tipo: el UNIQUE de la migracion no va a poder.
+    for (const [id, ctrl] of [
+      ["r1", "MSG1"],
+      ["r2", "MSG2"],
+    ]) {
+      inicial.exec(
+        `INSERT INTO raw_messages (id, received_at, message_control_id, message_type, raw_hl7, byte_size, parse_status)
+         VALUES ('${id}', '2025-01-01T00:00:00.000Z', '${ctrl}', 'ORU', 'x', 1, 'parsed')`,
+      );
+    }
+    inicial.close();
+
+    const logger = recordingLogger();
+    const db = openDb({ path: dbPath, logger, migrations: migracionRota });
+
+    // Lo que NO tiene que pasar: apartar una base perfectamente sana y arrancar
+    // vacia — encima la base nueva migraria bien y nadie notaria la perdida.
+    expect(readdirSync(join(dir, "db")).filter((f) => f.includes(".corrupt-"))).toHaveLength(0);
+    const row = db.prepare("SELECT COUNT(*) AS n FROM raw_messages").get() as { n: number };
+    expect(row.n).toBe(2);
+
+    // Sigue en la version vieja, pero vivo y con rastro de lo que paso.
+    expect(
+      (db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version,
+    ).toBe(1);
+    expect(logger.events.map((e) => e.msg)).toContain("db.migration.degraded");
+    db.close();
+  });
+
+  test("el servicio arranca igual (no tira, no hay loop de reinicios)", () => {
+    const dir = tmpDir();
+    const dbPath = join(dir, "db", "xs20.sqlite");
+    openDb({ path: dbPath }).close();
+
+    // Si esto lanzara, el error caeria en main().catch → exit(1) → NSSM
+    // reinicia → vuelve a fallar. Loop infinito sin diagnostico.
+    const siempreFalla: Migration[] = [
+      {
+        version: 2,
+        name: "explota",
+        up: () => {
+          throw new Error("boom");
+        },
+      },
+    ];
+    expect(() =>
+      openDb({ path: dbPath, logger: recordingLogger(), migrations: siempreFalla }),
+    ).not.toThrow();
+  });
+});
+
 describe("applyMigrations", () => {
   test("una base recien creada queda en la version del build", () => {
     const db = openDb({ path: ":memory:" });

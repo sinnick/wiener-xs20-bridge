@@ -75,6 +75,8 @@ export interface OpenDbOptions {
   initialize?: boolean;
   /** Para dejar rastro de la recuperacion y las migraciones aplicadas. */
   logger?: MigrateLogger;
+  /** Override de las migraciones (solo para tests). Default: MIGRATIONS. */
+  migrations?: Migration[];
 }
 
 /**
@@ -196,14 +198,39 @@ export function applyMigrations(
   return version;
 }
 
-/** Abre la base y le aplica schema + migraciones. No verifica corrupcion. */
-function openAndInitialize(opts: OpenDbOptions): Database {
+/** Abre la base y le aplica el schema base. No migra ni verifica corrupcion. */
+function openAndApplySchema(opts: OpenDbOptions): Database {
   const db = new Database(opts.path, { create: true });
   if (opts.initialize !== false) {
     db.exec(schemaSql);
-    applyMigrations(db, MIGRATIONS, opts.logger);
   }
   return db;
+}
+
+/**
+ * Corre las migraciones tolerando que fallen.
+ *
+ * Que una migracion falle NO puede ni apartar la base (perderiamos el historico
+ * clinico de una instalacion perfectamente sana) ni voltear el proceso (seria
+ * el loop de reinicios de NSSM otra vez). Se grita en el log y se sigue con la
+ * version vieja del schema: si la version nueva del codigo necesitaba la
+ * columna, va a fallar en runtime — pero de forma visible y con los datos
+ * intactos, que es de donde se puede volver.
+ */
+function migrateOrDegrade(db: Database, opts: OpenDbOptions): void {
+  const logger = opts.logger;
+  try {
+    applyMigrations(db, opts.migrations ?? MIGRATIONS, logger);
+  } catch (e) {
+    logger?.error("db.migration.degraded", {
+      error: (e as Error).message,
+      schemaVersionEsperada: SCHEMA_VERSION,
+      detail:
+        "No se pudo actualizar el schema de la base. El servicio arranca igual " +
+        "con la version anterior y los datos quedan intactos. Puede que alguna " +
+        "funcion nueva de la app no ande hasta resolverlo.",
+    });
+  }
 }
 
 export function openDb(opts: OpenDbOptions): Database {
@@ -214,35 +241,47 @@ export function openDb(opts: OpenDbOptions): Database {
   }
 
   const logger = opts.logger;
+  let db: Database;
 
+  // ── Fase 1: abrir y garantizar que la base sea usable ──────────────────────
+  // Solo lo que indica corrupcion real (no se puede abrir, no pasa el chequeo,
+  // el schema base no se puede aplicar) llega al camino de recuperacion.
   try {
-    const db = new Database(opts.path, { create: true });
+    db = new Database(opts.path, { create: true });
 
     // Chequeamos ANTES de tocar el schema: un `exec` contra una base rota puede
     // fallar con un error generico que no delata que el problema es corrupcion.
     const corruption = opts.initialize === false ? null : checkIntegrity(db);
-    if (corruption === null) {
-      if (opts.initialize !== false) {
-        db.exec(schemaSql);
-        applyMigrations(db, MIGRATIONS, logger);
+    if (corruption !== null) {
+      logger?.error("db.corrupted", { dbPath: opts.path, verdict: corruption });
+      try {
+        db.close();
+      } catch {
+        // ignore
       }
-      return db;
+      db = recoverFromCorruption(opts, corruption);
+    } else if (opts.initialize !== false) {
+      db.exec(schemaSql);
     }
-
-    logger?.error("db.corrupted", { dbPath: opts.path, verdict: corruption });
-    try {
-      db.close();
-    } catch {
-      // ignore
-    }
-    return recoverFromCorruption(opts, corruption);
   } catch (e) {
     // `new Database()` o el schema tiraron: archivo truncado, no-SQLite, o
     // header ilegible. Mismo tratamiento que la corrupcion detectada.
     const message = (e as Error).message;
     logger?.error("db.open_failed", { dbPath: opts.path, error: message });
-    return recoverFromCorruption(opts, message);
+    db = recoverFromCorruption(opts, message);
   }
+
+  // ── Fase 2: migrar ─────────────────────────────────────────────────────────
+  // A PROPOSITO fuera del try de arriba. Si esto viviera adentro, una migracion
+  // que falla (un UNIQUE que los datos existentes violan, por ejemplo) se
+  // interpretaria como "base corrupta" y mandaria a apartar una base SANA con
+  // todo el historico del laboratorio — y la base nueva y vacia migraria bien,
+  // asi que ni siquiera se notaria.
+  if (opts.initialize !== false) {
+    migrateOrDegrade(db, opts);
+  }
+
+  return db;
 }
 
 /**
@@ -259,7 +298,7 @@ function recoverFromCorruption(opts: OpenDbOptions, reason: string): Database {
 
   let db: Database;
   try {
-    db = openAndInitialize(opts);
+    db = openAndApplySchema(opts);
   } catch (e) {
     // Si tampoco podemos crear una base nueva, el problema no es el archivo
     // (disco lleno, carpeta sin permisos). Ahi si no hay nada que hacer aca:
