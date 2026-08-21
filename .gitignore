@@ -39,5 +39,11 @@ Thumbs.db
 # Datos de prueba del simulador
 data-portable/
 
+# Resultados reales del laboratorio: son datos de pacientes y este repo es
+# publico. Los .txt de muestra para tests van en scripts/fixtures/ anonimizados.
+WXS_*.TXT
+WXS_*.txt
+dist-windows/
+
 # Staging del paquete de distribucion (el .zip listo para copiar; se regenera)
 paquete-distribucion/
