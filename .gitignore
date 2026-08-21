@@ -29,6 +29,13 @@ Thumbs.db
 .env
 .env.local
 
+# Credenciales del VPS para 'bun run release' (usuario@host, ruta del docroot).
+# Ver docs/10-build-windows.md.
+.release.env
+
+# Artefactos listos para publicar que genera 'bun run release'.
+release-dist/
+
 # Electrobun
 .electrobun/
 

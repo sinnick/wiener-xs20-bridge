@@ -87,9 +87,12 @@ writeVersionTs(version);
 console.log(`
 Listo. Proximos pasos para publicar:
 
-  git add -A && git commit -m "v${version}"
-  git tag v${version}
-  git push && git push --tags
+  git commit -am "v${version}"
+  bun run release
 
-El push del tag dispara el workflow de release que publica el instalador
-en GitHub Releases.`);
+'bun run release' (scripts/release.ts) corre typecheck + tests, compila el
+servicio para x64 y ARM64, arma el instalador NSIS cruzando desde macOS con
+cargo-xwin, y sube el instalador + latest.json al VPS. Necesita un archivo
+.release.env con los datos del servidor (ver docs/10-build-windows.md).
+
+Para generar los artefactos sin subir nada: bun run release --no-deploy`);
