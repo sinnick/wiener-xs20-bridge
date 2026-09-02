@@ -54,3 +54,8 @@ dist-windows/
 
 # Staging del paquete de distribucion (el .zip listo para copiar; se regenera)
 paquete-distribucion/
+
+# Ejemplos de .txt generados a mano para mostrar el formato. Se regeneran
+# cuando hacen falta y la carpeta puede terminar recibiendo exportaciones
+# reales: el repo es publico, no van datos de pacientes.
+ejemplos-txt/
