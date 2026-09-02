@@ -48,7 +48,7 @@ instalada, la última publicada, la fecha del último chequeo, un botón
   "notes": "Exportación a .txt por muestra",
   "publishedAt": "2026-08-21T13:45:00.000Z",
   "installer": {
-    "url": "https://sinnick.dev/wiener/update/wiener-xs20-bridge_0.2.0_x64-setup.exe",
+    "url": "https://sinnick.dev/wiener/update/wiener-xs20-bridge_0.2.1_x64-setup.exe",
     "sha256": "3f786850e387550fdab836ed7e6dc881de23001b0000000000000000deadbeef",
     "size": 52920935
   }
@@ -60,7 +60,7 @@ instalada, la última publicada, la fecha del último chequeo, un botón
 | `version` | sí | `X.Y.Z` (se acepta también `vX.Y.Z`). Si no parsea, el servicio lo reporta como manifest inválido |
 | `notes` | no | Texto de novedades. Se recorta a 2000 caracteres |
 | `publishedAt` | no | ISO 8601. Solo informativo, se muestra en la card de Estado |
-| `installer.url` | sí | URL del `.exe`. Puede ser absoluta o **relativa al manifest** (ej. `"wiener-xs20-bridge_0.2.0_x64-setup.exe"`). Solo `http`/`https` |
+| `installer.url` | sí | URL del `.exe`. Puede ser absoluta o **relativa al manifest** (ej. `"wiener-xs20-bridge_0.2.1_x64-setup.exe"`). Solo `http`/`https` |
 | `installer.sha256` | sí | 64 caracteres hex, mayúsculas o minúsculas |
 | `installer.size` | no | Bytes. Si está, se usa para la barra de progreso y para detectar una descarga cortada |
 
@@ -75,94 +75,85 @@ Lo genera `bun run release` — **no hay que escribirlo a mano.**
 ## Publicar una versión nueva
 
 ```bash
-bun run bump 0.2.0
-git commit -am "v0.2.0"
-bun run release
+bun run bump 0.2.2
+git commit -am "v0.2.2"
+bun run release --notes="Qué cambió, en una línea que entienda la operadora"
 ```
 
 Detalle completo del script, sus chequeos y las variables de `.release.env` en
 `docs/10-build-windows.md`.
 
-> **Trampa importante**: la instalación que corre hoy en el laboratorio es la
-> **0.1.0**. El banner solo aparece con una versión *estrictamente mayor*, así
-> que el primer manifest que se publique tiene que anunciar **0.2.0 o
-> superior**. `bun run release` aborta si la versión es menor a 0.2.0 o si no es
-> mayor a la ya publicada en el VPS.
+> **Las notas no son para vos.** Lo que va en `--notes` es exactamente lo que la
+> operadora del laboratorio lee en el banner para decidir si actualiza ahora o
+> cuando termine las muestras del día. Sin el flag, el script cae en el asunto
+> del último commit — que puede ser cualquier cosa: en el primer intento de la
+> 0.2.1 salió *"gitignore: la carpeta de .txt de ejemplo"*.
 
-## Qué configurar en el VPS
+> **Versión estrictamente mayor.** El banner solo aparece con una versión mayor
+> a la instalada. `bun run release` aborta si la versión es menor a 0.2.0 o si
+> no supera a la ya publicada en el VPS.
 
-Hoy `https://sinnick.dev/wiener/update/` cae en el catch-all del sitio: nginx
-devuelve el HTML de la home con un **200**. El servicio lo tolera (lo trata como
-"no hay novedades", sin marcar error), pero mientras esté así el auto-update no
-funciona. Hay que agregarle un bloque a nginx que sirva esa ruta como carpeta de
-archivos estáticos.
+## El VPS (ya configurado)
 
-### 1. Crear la carpeta
+> **Estado: aplicado el 02/09/2026.** Esta sección queda como referencia de qué
+> hay puesto y por qué, no como pasos pendientes.
 
-```bash
-sudo mkdir -p /var/www/sinnick.dev/wiener/update
-sudo chown -R $USER:www-data /var/www/sinnick.dev/wiener
-sudo chmod -R 755 /var/www/sinnick.dev/wiener
+El servidor es el nodo Tailscale **`vps`** (`srv801068.hstgr.cloud`), que aloja
+varias apps más bajo el mismo `sinnick.dev`. El acceso va por Tailscale SSH como
+`root@vps` — no hay clave privada en `.release.env`.
+
+### Dónde viven los archivos
+
+```
+/var/www/wiener-update/
+├── latest.json
+├── SHA256SUMS.txt
+└── wiener-xs20-bridge_<version>_x64-setup.exe
 ```
 
-Tiene que ser escribible por el usuario con el que `rsync` entra
-(`RELEASE_SSH_TARGET`) y legible por nginx (`www-data`). La ruta absoluta que se
-elija es la que va en `RELEASE_REMOTE_DIR`.
+Carpeta propia, fuera del docroot del sitio (`/var/www/sinnick`), para que un
+`try_files` de la SPA no pueda pisarla nunca.
 
-### 2. Bloque de nginx
+### Bloque de nginx
 
-Dentro del `server { ... }` de `sinnick.dev` (típicamente
-`/etc/nginx/sites-available/sinnick.dev`), **antes** del `location /`:
+En `/etc/nginx/sites-available/sinnick.dev`, **antes** del `location /`:
 
 ```nginx
-# Auto-update del Wiener XS 20 Bridge: archivos estaticos, no la SPA.
+# ─── Wiener XS 20 — canal de actualizaciones del bridge del laboratorio ──
+# Lo consulta el servicio instalado en la PC del laboratorio cada 6 h.
+# `^~` para que gane contra cualquier location con regex.
+# El manifest se relee cada 6 h: un proxy que lo cachee esconde updates. Con
+# "no-cache" el cliente revalida por ETag y no rebaja los 50 MB al pedo.
 location ^~ /wiener/update/ {
-    alias /var/www/sinnick.dev/wiener/update/;
+    alias /var/www/wiener-update/;
     autoindex off;
-
-    # Content-Type correcto para cada cosa que servimos aca.
-    types {
-        application/json          json;
-        text/plain                txt;
-        application/octet-stream  exe;
-    }
-    default_type application/octet-stream;
-
-    # El manifest se relee cada 6 h: un proxy que lo cachee esconde updates.
-    # Con "no-cache" el cliente igual revalida por ETag, asi que el .exe no se
-    # vuelve a bajar entero si no cambio.
     add_header Cache-Control "no-cache" always;
 }
 ```
 
-Después:
-
-```bash
-sudo nginx -t && sudo systemctl reload nginx
-```
-
 **Por qué cada línea:**
 
-- **`^~`** — le dice a nginx que si esta ruta matchea, no siga evaluando
-  locations con expresión regular. Sin eso, cualquier `location ~ ...` del sitio
-  (o el `try_files ... /index.html` de la SPA) puede quedarse con el pedido y
-  volver a devolver el HTML de la home.
+- **`^~`** — si esta ruta matchea, nginx no sigue evaluando locations con
+  expresión regular. Sin eso, el `try_files ... /index.html` de la SPA puede
+  quedarse con el pedido y devolver el HTML de la home con un 200.
 - **`alias` (no `root`)** — con `alias`, `/wiener/update/latest.json` se resuelve
-  a `<alias>/latest.json`. Con `root` habría que replicar `wiener/update/` dentro
-  del docroot. La barra final va en los dos lados o en ninguno.
-- **`types { ... }` con `exe → application/octet-stream`** — sin esto nginx le
-  pone `text/plain` (el `default_type`) a un `.exe`, y algunos proxies y
-  antivirus corporativos lo alteran o lo bloquean. El `.exe` tiene que viajar
-  como binario.
-- **`autoindex off`** — que no se pueda listar la carpeta.
+  a `/var/www/wiener-update/latest.json`. La barra final va en los dos lados o
+  en ninguno.
+- **`autoindex off`** — que no se pueda listar la carpeta (devuelve 403).
+- **`no-cache` (no `no-store`)** — el cliente igual revalida por ETag, así que un
+  `.exe` que no cambió no se vuelve a bajar entero.
 
-### 3. Verificar
+No hace falta un bloque `types`: el `mime.types` que trae nginx ya sirve
+`.json` como `application/json` y `.exe` como `application/octet-stream`, que es
+lo que hay que verificar si algún día se cambia de servidor.
+
+### Verificar
 
 ```bash
 curl -i https://sinnick.dev/wiener/update/latest.json
 # 200 + content-type: application/json  (NO text/html)
 
-curl -sI https://sinnick.dev/wiener/update/wiener-xs20-bridge_0.2.0_x64-setup.exe
+curl -sI https://sinnick.dev/wiener/update/wiener-xs20-bridge_0.2.1_x64-setup.exe
 # 200 + content-type: application/octet-stream
 ```
 
@@ -172,10 +163,10 @@ sigue cayendo en el catch-all.
 ### Qué queda en esa carpeta
 
 ```
-/var/www/sinnick.dev/wiener/update/
+/var/www/wiener-update/
 ├── latest.json
 ├── SHA256SUMS.txt
-├── wiener-xs20-bridge_0.2.0_x64-setup.exe
+├── wiener-xs20-bridge_0.2.1_x64-setup.exe
 └── wiener-xs20-bridge_0.3.0_x64-setup.exe   ← los viejos no se borran solos
 ```
 
