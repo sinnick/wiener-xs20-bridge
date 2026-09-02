@@ -4,6 +4,7 @@
  *   bun run release              # compila, publica en el VPS
  *   bun run release --no-deploy  # solo compila y deja todo en release-dist/
  *   bun run release --skip-tests # atajo para iterar (NO usar para publicar)
+ *   bun run release --notes="Texto que lee la operadora en el banner"
  *
  * Que hace, en orden:
  *
@@ -339,7 +340,18 @@ async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const noDeploy = args.includes("--no-deploy");
   const skipTests = args.includes("--skip-tests");
-  const unknown = args.filter((a) => !["--no-deploy", "--skip-tests"].includes(a));
+
+  // Las notas las lee la operadora del laboratorio en el banner de la app, asi
+  // que se pasan a mano. El default (el asunto del ultimo commit) sirve para
+  // probar, pero puede ser cualquier cosa — "gitignore: ..." es lo que salio en
+  // el primer intento de la 0.2.1 — y no le dice nada a quien tiene que decidir
+  // si actualizar ahora o despues de terminar las muestras del dia.
+  const notesArg = args.find((a) => a.startsWith("--notes="));
+  const notesFromFlag = notesArg ? notesArg.slice("--notes=".length).trim() : "";
+
+  const unknown = args.filter(
+    (a) => !["--no-deploy", "--skip-tests"].includes(a) && !a.startsWith("--notes="),
+  );
   if (unknown.length > 0) fail(`argumento desconocido: ${unknown.join(", ")}`);
 
   console.log("\n\x1b[1mWiener XS 20 — release\x1b[0m");
@@ -402,7 +414,7 @@ async function main(): Promise<void> {
   ok(`${installerName} (${mb(size)})`);
   ok(`sha256 ${sha256}`);
 
-  const notes = capture("git", ["log", "-1", "--pretty=%s"]);
+  const notes = notesFromFlag.length > 0 ? notesFromFlag : capture("git", ["log", "-1", "--pretty=%s"]);
   const manifest = {
     version,
     notes,
@@ -416,6 +428,12 @@ async function main(): Promise<void> {
   const manifestPath = join(DIST, "latest.json");
   writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
   ok(`latest.json (notas: "${notes}")`);
+  if (notesFromFlag.length === 0) {
+    info(
+      `\x1b[33m↑ eso es lo que va a leer la operadora en el banner.\x1b[0m ` +
+        `Si no se entiende, corre de nuevo con --notes="..."`,
+    );
+  }
   // SHA256SUMS.txt para verificar a mano una descarga manual.
   writeFileSync(join(DIST, "SHA256SUMS.txt"), `${sha256}  ${installerName}\n`);
 
