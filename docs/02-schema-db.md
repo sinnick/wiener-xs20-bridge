@@ -40,14 +40,14 @@ PRAGMA busy_timeout = 5000;         -- 5s de tolerancia ante locks
 CREATE TABLE raw_messages (
     id                  TEXT PRIMARY KEY,        -- ULID generado por el servicio
     received_at         TEXT NOT NULL,           -- ISO 8601 con TZ
-    message_control_id  TEXT NOT NULL,           -- MSH-10 (clave de idempotencia)
+    message_control_id  TEXT NOT NULL,           -- MSH-10 (OJO: el equipo lo reinicia en 1)
     message_type        TEXT NOT NULL,           -- "ORU^R01", etc.
     sender_address      TEXT,                    -- IP:puerto del peer
     raw_hl7             TEXT NOT NULL,           -- mensaje completo (sin framing MLLP)
     byte_size           INTEGER NOT NULL,
     parse_status        TEXT NOT NULL CHECK(parse_status IN ('parsed', 'failed', 'partial')),
     parse_error         TEXT,                    -- NULL si parse_status='parsed'
-    UNIQUE(message_control_id)                   -- idempotencia: mismo MSH-10 = mismo mensaje
+    UNIQUE(message_control_id)                   -- heredado; ver "Idempotencia" mas abajo
 );
 
 CREATE INDEX idx_raw_messages_received_at ON raw_messages(received_at DESC);
@@ -172,4 +172,10 @@ Para Fase 1: ejecutar el DDL completo si la DB no existe. Sin sistema de migraci
 
 ## Idempotencia
 
-El UNIQUE en `raw_messages.message_control_id` garantiza que si el XS 20 reenvía el mismo mensaje (por timeout del ACK), no lo procesamos dos veces. El servicio detecta el conflict, devuelve el ACK rápido, y no toca el resto de las tablas.
+Un resultado se identifica por **muestra + instante de análisis** (`results.sample_id` + `results.analyzed_at`). Si ese par ya está guardado, el mensaje se descarta y se responde el ACK igual: el XS 20 puede reenviar sin miedo, tanto por timeout del ACK como con un "enviar todo" del histórico.
+
+> **Por qué NO se deduplica por MSH-10.** El UNIQUE en `raw_messages.message_control_id` viene del supuesto (equivocado) de que ese campo identifica un mensaje. El XS 20 **reinicia el contador en 1 cada vez que arranca**, así que los ids de hoy chocan con los de ayer. Con esa deduplicación, los primeros N resultados de cada jornada se descartaban en silencio — sin fila y sin `.txt`. Pasó en el laboratorio: 25 hemogramas perdidos el 01/09/2026 y 35 el 02/09, hasta que el contador superaba la marca del día anterior. Desde afuera se veía como "tarda unos minutos en empezar a andar".
+>
+> El UNIQUE sigue en el schema porque la versión 1 está congelada (ver `db/migrate.ts`). Cuando el MSH-10 se repite, `XsRepo` guarda el valor con un sufijo interno (`1#r_...`) para no chocar contra la restricción; el MSH-10 original queda intacto en `raw_hl7` y la lectura lo devuelve limpio.
+
+Si el mensaje no trae instante de análisis no hay con qué identificarlo, así que se inserta igual: una fila repetida se borra después, un hemograma perdido no se recupera.

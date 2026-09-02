@@ -56,6 +56,19 @@ export interface InsertResultParams {
   senderAddress: string | null;
 }
 
+/**
+ * Separador del sufijo que desambigua un message_control_id repetido.
+ * No aparece en los MSH-10 del equipo (son numeros), asi que no puede formar
+ * parte de un id legitimo. Ver XsRepo.storableControlId.
+ */
+const CONTROL_ID_SEPARATOR = "#";
+
+/** Devuelve el MSH-10 tal como lo mando el equipo, sin el sufijo interno. */
+export function originalControlId(stored: string): string {
+  const i = stored.indexOf(CONTROL_ID_SEPARATOR);
+  return i === -1 ? stored : stored.slice(0, i);
+}
+
 export class InsertResultDuplicateError extends Error {
   constructor(
     public readonly messageControlId: string,
@@ -71,22 +84,46 @@ export class XsRepo {
 
   /**
    * Inserta un resultado completo en una transaccion.
-   * Devuelve el id generado, o lanza InsertResultDuplicateError si el
-   * messageControlId ya existe.
+   * Devuelve el id generado, o lanza InsertResultDuplicateError si ESTE MISMO
+   * resultado (misma muestra, mismo instante de analisis) ya esta guardado.
    */
   insertResult(params: InsertResultParams): string {
     const { hemogram, rawHl7, senderAddress } = params;
 
     return this.db.transaction(() => {
-      // 1. Verificar idempotencia
-      const existing = this.db
-        .prepare<{ id: string }, [string]>(
-          "SELECT id FROM raw_messages WHERE message_control_id = ?",
-        )
-        .get(hemogram.messageControlId);
-      if (existing) {
-        throw new InsertResultDuplicateError(hemogram.messageControlId, existing.id);
+      // ── 1. Idempotencia ─────────────────────────────────────────────────
+      //
+      // MSH-10 NO identifica un mensaje en este equipo: el XS 20 REINICIA el
+      // contador en 1 cada vez que arranca. Deduplicar por ese campo hacia que
+      // los primeros N resultados de cada jornada (N = cuantos habia mandado la
+      // jornada anterior) se descartaran en silencio — sin fila en la base y
+      // sin .txt para el laboratorio. Confirmado en los logs de campo: el 01/09
+      // se perdieron los ids 1..25 y el primero que entro fue el 26; el 02/09 se
+      // perdieron 1..35 y entro el 36. Desde afuera se ve como "tarda unos
+      // minutos en empezar a andar".
+      //
+      // La identidad real de un resultado es la muestra + el instante en que se
+      // analizo. Ese par es lo que deduplica ahora, sin importar con que MSH-10
+      // venga: un reintento del equipo (no le llego nuestro ACK) y un reenvio
+      // del historico ("enviar todo" desde el analizador) traen el mismo par y
+      // no se duplican, pero una muestra nueva ya nunca se pierde.
+      const analyzedAt = hemogram.sample.analyzedAt?.toISOString() ?? null;
+      if (analyzedAt !== null) {
+        const existing = this.db
+          .prepare<{ raw_id: string }, [string, string]>(
+            `SELECT rm.id AS raw_id
+               FROM results r
+               JOIN raw_messages rm ON rm.id = r.raw_message_id
+              WHERE r.sample_id = ? AND r.analyzed_at = ?`,
+          )
+          .get(hemogram.sample.sampleId, analyzedAt);
+        if (existing) {
+          throw new InsertResultDuplicateError(hemogram.messageControlId, existing.raw_id);
+        }
       }
+      // Si el mensaje no trae instante de analisis no hay con que identificarlo,
+      // asi que insertamos igual: una fila repetida se borra despues, un
+      // hemograma perdido no se recupera.
 
       // 2. Insertar raw_messages
       const rawMessageId = `raw_${hemogram.id}`;
@@ -100,7 +137,7 @@ export class XsRepo {
         .run(
           rawMessageId,
           hemogram.receivedAt.toISOString(),
-          hemogram.messageControlId,
+          this.storableControlId(hemogram.messageControlId, hemogram.id),
           "ORU^R01",
           senderAddress,
           rawHl7,
@@ -195,6 +232,28 @@ export class XsRepo {
     })();
   }
 
+  /**
+   * Valor a guardar en `raw_messages.message_control_id`.
+   *
+   * El schema v1 tiene `UNIQUE(message_control_id)` y esta CONGELADO (ver el
+   * encabezado de migrate.ts: sacarlo obliga a reconstruir una tabla con hijos
+   * apuntandole, en la base de un laboratorio que se actualiza sola). Como el
+   * contador del equipo se repite todos los dias, cuando el valor ya esta
+   * tomado le colgamos un sufijo unico para no chocar contra el UNIQUE.
+   *
+   * El MSH-10 original queda intacto dentro de `raw_hl7`, la lectura lo
+   * devuelve limpio (ver originalControlId) y el ACK usa el valor en memoria:
+   * el equipo nunca ve la diferencia.
+   */
+  private storableControlId(controlId: string, uniqueSuffix: string): string {
+    const taken = this.db
+      .prepare<{ id: string }, [string]>(
+        "SELECT id FROM raw_messages WHERE message_control_id = ?",
+      )
+      .get(controlId);
+    return taken ? `${controlId}${CONTROL_ID_SEPARATOR}${uniqueSuffix}` : controlId;
+  }
+
   private upsertPatient(hemogram: HemogramResult, _rawMsgId: string): string {
     const externalId = hemogram.patient.patientId!;
     const now = hemogram.receivedAt.toISOString();
@@ -244,6 +303,11 @@ export class XsRepo {
     senderAddress: string | null;
     error: string;
   }): void {
+    // El OR IGNORE es la red de seguridad para el id de fila; el
+    // message_control_id se desambigua antes porque el contador del equipo se
+    // repite (ver storableControlId). Sin eso, el UNIQUE hacia que el mensaje
+    // fallido no se guardara y el OR IGNORE se comia el aviso: justo el caso
+    // en que mas falta hace tener el crudo para entender que llego.
     this.db
       .prepare(
         `INSERT OR IGNORE INTO raw_messages
@@ -254,7 +318,7 @@ export class XsRepo {
       .run(
         params.rawMessageId,
         params.receivedAt.toISOString(),
-        params.messageControlId,
+        this.storableControlId(params.messageControlId, params.rawMessageId),
         "UNKNOWN",
         params.senderAddress,
         params.rawHl7,
@@ -391,7 +455,7 @@ export class XsRepo {
     return {
       id: row.id,
       receivedAt: new Date(row.received_at),
-      messageControlId: rawRow?.message_control_id ?? "",
+      messageControlId: originalControlId(rawRow?.message_control_id ?? ""),
       patient: {
         patientId: row.external_id,
         name: row.patient_name,

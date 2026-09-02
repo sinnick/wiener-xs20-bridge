@@ -84,6 +84,114 @@ describe("XsRepo - insertResult", () => {
     ).toThrow(InsertResultDuplicateError);
   });
 
+  // ── Regresion: el MSH-10 del XS 20 se reinicia en 1 en cada arranque ──────
+  //
+  // Deduplicar por MSH-10 hacia que los primeros N resultados de cada jornada
+  // se descartaran en silencio (N = cuantos habia mandado la jornada anterior).
+  // En el laboratorio se perdieron 25 hemogramas el 01/09 y 35 el 02/09 antes
+  // de que el contador pasara la marca del dia anterior. Ver XsRepo.insertResult.
+
+  /** Variante de ORU_NORMAL con otro MSH-10 / muestra / instante de analisis. */
+  function oruVariante(opts: {
+    controlId?: string;
+    sampleId?: string;
+    analyzedAt?: string;
+  }): string {
+    let hl7 = ORU_NORMAL;
+    if (opts.controlId !== undefined) {
+      hl7 = hl7.replace("|ORU^R01|1001|", `|ORU^R01|${opts.controlId}|`);
+    }
+    if (opts.sampleId !== undefined) {
+      hl7 = hl7.replace("S20260427-0001", opts.sampleId);
+    }
+    if (opts.analyzedAt !== undefined) {
+      hl7 = hl7.replace("|20260427153100|", `|${opts.analyzedAt}|`);
+    }
+    return hl7;
+  }
+
+  function insertar(repo: XsRepo, id: string, hl7: string): void {
+    const { hemogram } = mapMessageToHemogram(parseHl7(hl7), { id, receivedAt: T0 });
+    repo.insertResult({ hemogram, rawHl7: hl7, senderAddress: null });
+  }
+
+  test("mismo MSH-10 pero otra muestra: se guarda (el equipo reinicio el contador)", () => {
+    const repo = makeRepo();
+    insertar(repo, "dia1-1", oruVariante({ controlId: "1", sampleId: "perez" }));
+
+    // Dia siguiente: el equipo arranca de cero y vuelve a numerar desde 1, pero
+    // es un paciente distinto. Antes esto se descartaba y no salia el .txt.
+    insertar(
+      repo,
+      "dia2-1",
+      oruVariante({ controlId: "1", sampleId: "gomez", analyzedAt: "20260428101500" }),
+    );
+
+    expect(repo.countResults()).toBe(2);
+    expect(repo.listResults({}).map((r) => r.sampleId).sort()).toEqual(["gomez", "perez"]);
+  });
+
+  test("mismo resultado con otro MSH-10: se deduplica (reenvio del historico)", () => {
+    const repo = makeRepo();
+    insertar(repo, "orig", oruVariante({ controlId: "7", sampleId: "perez" }));
+
+    // "Enviar todo" desde el analizador reenvia lo ya guardado con numeracion
+    // nueva. Es la forma en que el laboratorio recupera lo que se perdio, asi
+    // que tiene que ser seguro correrlo las veces que haga falta.
+    const { hemogram } = mapMessageToHemogram(
+      parseHl7(oruVariante({ controlId: "312", sampleId: "perez" })),
+      { id: "reenvio", receivedAt: new Date("2026-04-28T09:00:00Z") },
+    );
+    expect(() =>
+      repo.insertResult({ hemogram, rawHl7: "", senderAddress: null }),
+    ).toThrow(InsertResultDuplicateError);
+    expect(repo.countResults()).toBe(1);
+  });
+
+  test("un MSH-10 repetido no rompe el UNIQUE y se lee sin el sufijo interno", () => {
+    const repo = makeRepo();
+    insertar(repo, "dia1-1", oruVariante({ controlId: "1", sampleId: "perez" }));
+    insertar(
+      repo,
+      "dia2-1",
+      oruVariante({ controlId: "1", sampleId: "gomez", analyzedAt: "20260428101500" }),
+    );
+
+    // La app muestra el MSH-10; tiene que ver el que mando el equipo, no el
+    // valor con el que lo guardamos para esquivar el UNIQUE del schema v1.
+    expect(repo.getResult("dia1-1")!.messageControlId).toBe("1");
+    expect(repo.getResult("dia2-1")!.messageControlId).toBe("1");
+  });
+
+  test("una jornada entera despues de que el equipo reinicio no pierde nada", () => {
+    const repo = makeRepo();
+    // Jornada 1: el equipo numera 1, 2, 3.
+    for (const [i, sample] of ["perez", "gomez", "lopez"].entries()) {
+      insertar(repo, `d1-${i}`, oruVariante({ controlId: String(i + 1), sampleId: sample }));
+    }
+    // Jornada 2: arranca de nuevo en 1 con pacientes distintos.
+    for (const [i, sample] of ["diaz", "sosa", "rios"].entries()) {
+      insertar(
+        repo,
+        `d2-${i}`,
+        oruVariante({
+          controlId: String(i + 1),
+          sampleId: sample,
+          analyzedAt: `2026042810${String(i).padStart(2, "0")}00`,
+        }),
+      );
+    }
+    expect(repo.countResults()).toBe(6);
+  });
+
+  test("sin instante de analisis se inserta igual (mejor repetido que perdido)", () => {
+    const repo = makeRepo();
+    const sinFecha = ORU_NORMAL.replace("|20260427153100|", "||");
+    insertar(repo, "sf-1", sinFecha);
+    insertar(repo, "sf-2", sinFecha);
+    expect(repo.countResults()).toBe(2);
+  });
+
   test("anomalias: WBC=H, HGB=L cuentan como abnormal_count", () => {
     const repo = makeRepo();
     const msg = parseHl7(ORU_ANORMAL);

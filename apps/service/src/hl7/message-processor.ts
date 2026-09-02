@@ -121,9 +121,10 @@ export class MessageProcessor {
    * hay que repetir.
    *
    * Persistiendo primero, un problema de base termina en un "AE": el equipo se
-   * entera, puede reintentar, y el reintento es seguro porque
-   * UNIQUE(message_control_id) deduplica. La verdad le llega al que puede hacer
-   * algo al respecto.
+   * entera, puede reintentar, y el reintento es seguro porque la insercion
+   * deduplica por muestra + instante de analisis (ver XsRepo.insertResult; NO
+   * por MSH-10, que este equipo reinicia en 1 en cada arranque). La verdad le
+   * llega al que puede hacer algo al respecto.
    *
    * Lo que si hicimos es sacarle al camino critico todo lo que no sea guardar:
    *   - `busy_timeout` de SQLite bajo a 2500ms (< ACK_DEADLINE_MS): si la base

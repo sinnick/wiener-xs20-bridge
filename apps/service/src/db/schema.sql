@@ -23,8 +23,9 @@ PRAGMA synchronous = NORMAL;
 -- DEBE quedar por debajo de ACK_DEADLINE_MS (4000, ver hl7/protocol-map.ts):
 -- si la DB esta trabada (antivirus, backup, checkpoint del WAL) preferimos
 -- fallar rapido y responder un ACK negativo dentro del plazo del equipo —
--- que el equipo puede reintentar, y el UNIQUE(message_control_id) deduplica —
--- antes que mandar un ACK positivo tarde, que el equipo ya dio por perdido.
+-- que el equipo puede reintentar, y el reintento se deduplica por muestra +
+-- instante de analisis (ver XsRepo.insertResult) — antes que mandar un ACK
+-- positivo tarde, que el equipo ya dio por perdido.
 PRAGMA busy_timeout = 2500;
 
 CREATE TABLE IF NOT EXISTS raw_messages (
@@ -37,6 +38,11 @@ CREATE TABLE IF NOT EXISTS raw_messages (
     byte_size           INTEGER NOT NULL,
     parse_status        TEXT NOT NULL CHECK(parse_status IN ('parsed', 'failed', 'partial')),
     parse_error         TEXT,
+    -- OJO: el MSH-10 del XS 20 NO es unico — el equipo reinicia el contador en
+    -- 1 en cada arranque. Este UNIQUE quedo de un supuesto equivocado y no se
+    -- puede sacar (schema congelado). La deduplicacion real pasa por muestra +
+    -- instante de analisis; cuando el valor se repite, XsRepo le agrega un
+    -- sufijo interno para no chocar aca. Ver XsRepo.insertResult.
     UNIQUE(message_control_id)
 );
 
