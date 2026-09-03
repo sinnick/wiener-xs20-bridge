@@ -15,6 +15,7 @@
  *  POST /api/update/download
  *  POST /api/update/skip
  *  POST /api/export/rerun
+ *  POST /api/maintenance/wipe-database
  */
 
 import type { Server } from "bun";
@@ -30,8 +31,10 @@ import type {
   UpdateConfigResponse,
   ExportRerunRequest,
   ExportRerunResponse,
+  WipeDatabaseRequest,
+  WipeDatabaseResponse,
 } from "@xs20/shared";
-import { encodeHistogramBase64 } from "@xs20/shared";
+import { encodeHistogramBase64, WIPE_CONFIRMATION } from "@xs20/shared";
 
 import { exportStatus, probeAndRecord } from "../export/export-status.js";
 import { rerunExports, RERUN_MAX_LIMIT } from "../export/rerun.js";
@@ -153,6 +156,9 @@ export class HttpServer {
       } else if (path === "/api/export/rerun" && req.method === "POST") {
         if (!this.checkAuth(req, url)) return this.unauthorized();
         res = await this.exportRerun(req);
+      } else if (path === "/api/maintenance/wipe-database" && req.method === "POST") {
+        if (!this.checkAuth(req, url)) return this.unauthorized();
+        res = await this.wipeDatabase(req);
       } else {
         res = json({ error: { code: "NOT_FOUND", message: path } }, 404);
       }
@@ -790,6 +796,94 @@ export class HttpServer {
       notFound: result.notFound,
       errors: result.errors,
     };
+    return json(resp);
+  }
+
+  /**
+   * POST /api/maintenance/wipe-database — borra TODOS los resultados guardados.
+   *
+   * Para que el analizador pueda reenviar todo desde cero con su funcion "enviar
+   * todo": como deduplicamos por muestra + instante de analisis, un reenvio del
+   * historico no reescribe lo que ya esta. Ver XsRepo.wipeClinicalData.
+   *
+   * ── Por que POST y no DELETE ──────────────────────────────────────────────
+   * El Allow-Methods de CORS_HEADERS no incluye DELETE, asi que un
+   * fetch(method:"DELETE") desde el origen de la UI Tauri muere en el preflight
+   * sin llegar nunca aca. Antes de "arreglar" esto agregando DELETE al header,
+   * tener en cuenta que POST ya es el patron de todas las acciones de esta API.
+   *
+   * ── Por que el body tiene que traer la confirmacion ───────────────────────
+   * La confirmacion de la UI (escribir BORRAR) vive del lado del cliente: un
+   * refactor de StatusView o un `disabled` mal puesto la evapora sin que ningun
+   * test del servicio se entere. Ademas este endpoint es alcanzable por
+   * cualquier cosa que tenga el token — un curl de diagnostico, alguien copiando
+   * el ejemplo del doc — y sin `confirm` un body vacio borraria el laboratorio
+   * entero. Exigirlo cuesta seis lineas y hace que solo borre quien quiso borrar.
+   *
+   * OJO: esto protege contra el accidente, no contra un atacante. Cualquier
+   * proceso local que pueda leer config/api-token.txt puede mandar la palabra.
+   */
+  private async wipeDatabase(req: Request): Promise<Response> {
+    let body: WipeDatabaseRequest;
+    const rawBody = await req.text();
+    try {
+      body = JSON.parse(rawBody) as WipeDatabaseRequest;
+    } catch {
+      return json(
+        { error: { code: "VALIDATION_ERROR", message: "El cuerpo no es JSON válido" } },
+        400,
+      );
+    }
+    if (typeof body !== "object" || body === null || body.confirm !== WIPE_CONFIRMATION) {
+      return json(
+        {
+          error: {
+            code: "VALIDATION_ERROR",
+            message:
+              `Para borrar la base hay que enviar 'confirm' con el texto ${WIPE_CONFIRMATION}.`,
+          },
+        },
+        400,
+      );
+    }
+
+    // Antes de intentar el borrado: si la base no acepta escrituras, un 409 con
+    // una instruccion sirve mucho mas que un 500 con un mensaje de SQLite crudo.
+    const writable = this.opts.repo.probeWritable();
+    if (!writable.ok) {
+      return json(
+        {
+          error: {
+            code: "DB_READONLY",
+            message:
+              "La base no acepta escrituras, así que no se puede borrar. Cerrá la " +
+              "app y volvé a abrirla; si sigue igual, revisá los permisos de la " +
+              "carpeta C:\\ProgramData\\WienerXS20\\db.",
+          },
+        },
+        409,
+      );
+    }
+
+    const resp: WipeDatabaseResponse = this.opts.repo.wipeClinicalData();
+
+    // A nivel warn a proposito: sobrevive a logLevel "warn", aparece en la
+    // pantalla Actividad y viaja por SSE, que es como la UI se entera de que
+    // tiene que refrescar. El msg coincide con el eventType del audit_log para
+    // que grepear el log y consultar la base den lo mismo.
+    this.opts.logger.warn("db.wiped", {
+      deletedResults: resp.deletedResults,
+      deletedRawMessages: resp.deletedRawMessages,
+      deletedPatients: resp.deletedPatients,
+      sizeBefore: resp.sizeBefore,
+      sizeAfter: resp.sizeAfter,
+      vacuumed: resp.vacuumed,
+      durationMs: resp.durationMs,
+      detail:
+        "Borrado pedido desde la app. Los .txt ya exportados NO se tocaron: se " +
+        "pisan a medida que el equipo reenvía cada muestra.",
+    });
+
     return json(resp);
   }
 

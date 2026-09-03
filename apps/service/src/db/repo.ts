@@ -14,7 +14,11 @@ import type {
   HemogramValue,
   Histogram,
   ResultSummary,
+  WipeDatabaseResponse,
 } from "@xs20/shared";
+
+/** Lo que devuelve XsRepo.wipeClinicalData — es el cuerpo de la respuesta HTTP. */
+export type WipeDatabaseResult = WipeDatabaseResponse;
 
 // ─── Tipos de los rows tal como viven en la DB ───────────────────────────────
 
@@ -595,5 +599,107 @@ export class XsRepo {
         params.message,
         params.context ? JSON.stringify(params.context) : null,
       );
+  }
+
+  // ─── Borrado total ─────────────────────────────────────────────────────────
+
+  /**
+   * Borra TODOS los datos clinicos para que el analizador pueda mandarlos de
+   * nuevo desde cero con su funcion "enviar todo".
+   *
+   * Por que hace falta: la deduplicacion es por muestra + instante de analisis
+   * (ver insertResult), asi que un reenvio del historico NO vuelve a escribir lo
+   * que ya esta guardado. Sin vaciar la base no hay forma de reimportar, y esa
+   * es justamente la manera de recuperar los hemogramas que se perdieron cuando
+   * deduplicabamos por MSH-10.
+   *
+   * Borra filas, NO el schema: nada de DROP TABLE + reaplicar schema.sql, que
+   * dejaria `PRAGMA user_version` mintiendo y rompe el contrato de migrate.ts.
+   *
+   * Lo unico que sobrevive es `service_config` (la configuracion del servicio) y
+   * `audit_log` (el rastro historico, incluida la anotacion de este borrado).
+   */
+  wipeClinicalData(now = new Date()): WipeDatabaseResult {
+    const startedAt = performance.now();
+    const sizeBefore = this.databaseSizeBytes();
+
+    const counts = this.db.transaction(() => {
+      // Contamos ANTES de borrar, con COUNT(*) y no con el `changes` del DELETE:
+      // un DELETE sin WHERE puede tomar el camino de truncate de SQLite, donde
+      // el valor de changes() es ambiguo segun la version. El numero que ve la
+      // operadora tiene que ser exacto.
+      const count = (table: string): number =>
+        (
+          this.db.prepare<{ n: number }, []>(`SELECT COUNT(*) as n FROM ${table}`).get() ?? {
+            n: 0,
+          }
+        ).n;
+
+      const deleted = {
+        results: count("results"),
+        rawMessages: count("raw_messages"),
+        patients: count("patients"),
+        resultValues: count("result_values"),
+        histograms: count("histograms"),
+        morphologyFlags: count("morphology_flags"),
+      };
+
+      // Hijo → padre, explicito. NO simplificar a un solo DELETE confiando en el
+      // ON DELETE CASCADE, por dos razones independientes:
+      //   1. `patients` no cascadea nunca — el FK es results.patient_id con
+      //      ON DELETE SET NULL, y ademas apunta al reves.
+      //   2. `PRAGMA foreign_keys` es POR CONEXION. Hoy queda encendido solo
+      //      porque openDb ejecuta schema.sql en cada apertura; con
+      //      `initialize: false` los cascades no corren y quedarian huerfanos.
+      this.db.exec(`DELETE FROM result_values`);
+      this.db.exec(`DELETE FROM histograms`);
+      this.db.exec(`DELETE FROM morphology_flags`);
+      this.db.exec(`DELETE FROM results`);
+      this.db.exec(`DELETE FROM raw_messages`);
+      this.db.exec(`DELETE FROM patients`);
+
+      // La auditoria va DENTRO de la transaccion: si el borrado se revierte, el
+      // rastro se revierte con el. Una linea que diga "borre 1.284 resultados"
+      // cuando siguen ahi es peor que no tener ninguna.
+      this.appendAudit({
+        occurredAt: now,
+        level: "warn",
+        eventType: "db.wiped",
+        message: "Se borro toda la base de resultados desde la app",
+        context: { ...deleted, sizeBefore },
+      });
+
+      return deleted;
+    })();
+
+    // VACUUM no puede correr dentro de una transaccion, asi que va recien aca.
+    //
+    // Importa por lo que ve la operadora, no por prolijidad: databaseSizeBytes()
+    // es page_count * page_size, y sin compactar la card de Estado seguiria
+    // diciendo "30 MB" con cero resultados. El wal_checkpoint(TRUNCATE) es su
+    // complemento — el archivo -wal no entra en page_count, asi que sin truncarlo
+    // el disco sigue ocupado aunque la card muestre 32 KB.
+    //
+    // El catch que se traga el error es deliberado: a esta altura los datos YA
+    // estan borrados y commiteados. Un VACUUM que falla (tipicamente por falta de
+    // espacio: necesita un temporal del tamano de la base) no puede convertir una
+    // operacion exitosa en un error.
+    let vacuumed = true;
+    try {
+      this.db.exec("VACUUM");
+      this.db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+    } catch {
+      vacuumed = false;
+    }
+
+    return {
+      deletedResults: counts.results,
+      deletedRawMessages: counts.rawMessages,
+      deletedPatients: counts.patients,
+      sizeBefore,
+      sizeAfter: this.databaseSizeBytes(),
+      vacuumed,
+      durationMs: Math.round(performance.now() - startedAt),
+    };
   }
 }

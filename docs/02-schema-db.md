@@ -179,3 +179,41 @@ Un resultado se identifica por **muestra + instante de análisis** (`results.sam
 > El UNIQUE sigue en el schema porque la versión 1 está congelada (ver `db/migrate.ts`). Cuando el MSH-10 se repite, `XsRepo` guarda el valor con un sufijo interno (`1#r_...`) para no chocar contra la restricción; el MSH-10 original queda intacto en `raw_hl7` y la lectura lo devuelve limpio.
 
 Si el mensaje no trae instante de análisis no hay con qué identificarlo, así que se inserta igual: una fila repetida se borra después, un hemograma perdido no se recupera.
+
+## Borrado total
+
+`POST /api/maintenance/wipe-database` (ver `docs/03-contrato-http.md`) vacía las seis tablas
+clínicas para que el analizador pueda reenviar todo desde cero. `XsRepo.wipeClinicalData`.
+
+Borra **filas, no el schema**: nada de `DROP TABLE` + reaplicar `schema.sql`, que dejaría
+`PRAGMA user_version` mintiendo y rompe el contrato de `migrate.ts`.
+
+El orden es hijo → padre y es **explícito**:
+
+```
+result_values → histograms → morphology_flags → results → raw_messages → patients
+```
+
+No se apoya en el `ON DELETE CASCADE`, por dos razones independientes:
+
+1. `patients` no cascadea nunca — el FK es `results.patient_id` con `ON DELETE SET NULL`, y
+   además apunta en la dirección contraria.
+2. `PRAGMA foreign_keys` es **por conexión**. Hoy queda encendido solo porque `openDb`
+   ejecuta `schema.sql` en cada apertura; con `initialize: false` los cascades no corren y
+   quedarían filas huérfanas.
+
+Hay un test que abre la base con `PRAGMA foreign_keys = OFF` justamente para que nadie
+"simplifique" esto a un solo `DELETE FROM results`.
+
+**Sobrevive**: `service_config` (la configuración del servicio) y `audit_log`, donde queda
+una fila `db.wiped` con los contadores. La auditoría se escribe **dentro** de la misma
+transacción: si el borrado se revierte, el rastro se revierte con él.
+
+Después del commit corre `VACUUM` + `PRAGMA wal_checkpoint(TRUNCATE)`, fuera de la
+transacción porque SQLite no permite `VACUUM` adentro. Es por lo que ve la operadora:
+`databaseSizeBytes()` es `page_count * page_size`, así que sin compactar la app seguiría
+mostrando "30 MB" con cero resultados, y sin truncar el `-wal` el disco seguiría ocupado
+aunque la app muestre 32 KB. Si falla (típicamente por falta de espacio: necesita un
+temporal del tamaño de la base) se reporta `vacuumed: false` y nada más — a esa altura los
+datos ya están borrados y commiteados.
+

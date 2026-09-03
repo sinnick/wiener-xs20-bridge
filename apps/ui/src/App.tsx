@@ -36,6 +36,14 @@ export function App() {
           if (typeof sampleId === "string") setLastArrivedId(sampleId);
           setRefreshKey((k) => k + 1);
         }
+        // Se borro la base entera desde Estado. Hoy es imposible que pase con
+        // la lista a la vista (el montaje de las vistas es excluyente), pero
+        // limpiar el resaltado igual evita que apunte a una muestra que ya no
+        // existe, y deja el refresco correcto si alguna vez conviven.
+        if (e.msg === "db.wiped") {
+          setLastArrivedId(null);
+          setRefreshKey((k) => k + 1);
+        }
       },
       onReconnect: () => setRefreshKey((k) => k + 1),
     });

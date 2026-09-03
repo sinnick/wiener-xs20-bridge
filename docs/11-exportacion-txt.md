@@ -174,3 +174,14 @@ conviene apuntarla a algo visible, ej. `C:\Users\<usuario>\Documents\Hemogramas`
 
 También existe el override por entorno `XS20_EXPORT_DIR` y el orden de
 precedencia es el mismo del resto de la config (ver `config.ts`).
+
+## Borrar la base NO borra los .txt
+
+La opción "Borrar la base de datos" (Estado → Mantenimiento) vacía los resultados
+guardados, pero **no toca un solo archivo** de la carpeta de exportación. Es deliberado: esa
+carpeta la consume el LIS, y borrar de ahí es la única parte de la operación que no se
+podría deshacer ni siquiera reenviando desde el analizador.
+
+Lo que pasa después es que cada `.txt` se **pisa** cuando el equipo reenvía su muestra, con
+el mismo nombre de archivo de siempre. Si una muestra vieja no se reenvía, su `.txt` queda
+tal como estaba.

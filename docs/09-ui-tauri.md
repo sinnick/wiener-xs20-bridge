@@ -65,12 +65,36 @@ En dev, el `data-dir` por defecto del servicio en Linux es
   histogramas.
 - **Actividad** — logs del servicio en vivo (SSE), con filtro por nivel y pausa.
 - **Estado** — health del servicio: conexión TCP, base de datos, uptime, y la
-  card "Actualizaciones" (buscar ahora, toggle de chequeo automático).
+  card "Actualizaciones" (buscar ahora, toggle de chequeo automático). Al final,
+  separada del grid de cards, la sección **Mantenimiento** (ver abajo).
 
 Además hay un **banner global de actualizaciones** (`components/UpdateBanner.tsx`
 + `hooks/useUpdateStatus.ts`) que aparece en cualquier vista cuando el servicio
 detectó una versión nueva: descargar con progreso → "Instalar y reiniciar"
 (cierra la app y lanza el instalador via el comando `run_installer`).
+
+## Mantenimiento: borrar la base
+
+Al fondo de Estado, fuera del grid de cards y detrás de un borde. Está ahí a
+propósito: romper el ritmo visual hace que no se lea como "una opción más de la
+lista", y queda al final de un scroll largo.
+
+Borra todos los resultados guardados para que el analizador pueda reenviarlos
+desde cero con su función "enviar todo" (`POST /api/maintenance/wipe-database`).
+
+La confirmación **no es un doble clic**: hay que escribir `BORRAR` en un input
+para que el botón se habilite. Un doble clic son dos clics seguidos en el mismo
+lugar, que es exactamente lo que hace alguien apurado. El texto se compara con
+`trim()` y sin distinguir mayúsculas — pelearle eso a quien ya escribió la
+palabra a propósito es fricción sin señal.
+
+El servidor exige la palabra **también en el body**: la validación de la UI vive
+del lado del cliente y un refactor la puede evaporar sin que ningún test del
+servicio se entere. Ver `docs/03-contrato-http.md`.
+
+Los `.txt` ya exportados no se tocan (`docs/11-exportacion-txt.md`), y el
+borrado queda anotado en el log (`db.wiped`, nivel warn, visible en Actividad) y
+en `audit_log`.
 
 ## Build de escritorio (Tauri)
 

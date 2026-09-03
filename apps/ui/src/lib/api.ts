@@ -22,7 +22,9 @@ import type {
   UpdateConfigRequest,
   UpdateConfigResponse,
   UpdateStatusResponse,
+  WipeDatabaseResponse,
 } from "@xs20/shared";
+import { WIPE_CONFIRMATION } from "@xs20/shared";
 
 const BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:7700";
 
@@ -253,6 +255,23 @@ export function rerunExport(params: ExportRerunRequest = {}): Promise<ExportReru
   return apiPost<ExportRerunResponse>("/api/export/rerun", params);
 }
 
+// ─── Mantenimiento ───────────────────────────────────────────────────────────
+
+/**
+ * Borra TODOS los resultados guardados, para que el analizador pueda mandarlos
+ * de nuevo desde cero con su funcion "enviar todo".
+ *
+ * No recibe parametros a proposito: la UI nunca manda otra cosa que la constante
+ * compartida. Que la operadora haya tipeado la palabra es una condicion de la
+ * interfaz; que el servidor la exija es una condicion del protocolo. Son dos
+ * cosas distintas y no hay que acoplarlas pasando el texto del input.
+ */
+export function wipeDatabase(): Promise<WipeDatabaseResponse> {
+  return apiPost<WipeDatabaseResponse>("/api/maintenance/wipe-database", {
+    confirm: WIPE_CONFIRMATION,
+  });
+}
+
 // ─── Actualizaciones ─────────────────────────────────────────────────────────
 
 export function getUpdateStatus(): Promise<UpdateStatusResponse> {
@@ -430,4 +449,6 @@ export type {
   UpdateConfigRequest,
   UpdateConfigResponse,
   UpdateStatusResponse,
+  WipeDatabaseResponse,
 };
+export { WIPE_CONFIRMATION };

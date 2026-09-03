@@ -222,6 +222,42 @@ export interface ExportRerunResponse {
   errors: { id: string; sampleId: string; error: string }[];
 }
 
+// ─── Mantenimiento: borrado total de la base ─────────────────────────────────
+// POST /api/maintenance/wipe-database borra TODOS los resultados guardados para
+// que el analizador pueda mandarlos de nuevo desde cero con su funcion "enviar
+// todo". Existe porque la deduplicacion (por muestra + instante de analisis)
+// hace que un reenvio del historico no vuelva a escribir lo que ya esta: sin
+// vaciar la base, no hay forma de reimportar.
+//
+// Los .txt YA exportados no se tocan: se van pisando a medida que el equipo
+// reenvia cada muestra. Ver docs/11-exportacion-txt.md.
+
+/**
+ * Texto que hay que escribir para confirmar el borrado.
+ *
+ * Vive aca y no en cada lado a proposito: lo valida el servidor y lo usa la UI
+ * para habilitar el boton. Una sola fuente, asi los dos no se pueden
+ * desincronizar si algun dia se cambia la palabra.
+ */
+export const WIPE_CONFIRMATION = "BORRAR";
+
+export interface WipeDatabaseRequest {
+  /** Tiene que ser exactamente WIPE_CONFIRMATION. */
+  confirm: string;
+}
+
+export interface WipeDatabaseResponse {
+  deletedResults: number;
+  deletedRawMessages: number;
+  deletedPatients: number;
+  /** Tamano del archivo antes y despues, en bytes. */
+  sizeBefore: number;
+  sizeAfter: number;
+  /** false si no se pudo compactar el archivo. Los datos igual se borraron. */
+  vacuumed: boolean;
+  durationMs: number;
+}
+
 // ─── Actualizaciones ─────────────────────────────────────────────────────────
 // El servicio chequea el manifest publicado en el VPS periodicamente (ver
 // apps/service/src/update/update-checker.ts). La UI hace polling de

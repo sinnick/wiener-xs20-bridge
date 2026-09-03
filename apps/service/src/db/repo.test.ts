@@ -307,3 +307,139 @@ describe("XsRepo - insertResult", () => {
     expect(repo.databaseSizeBytes()).toBeGreaterThan(0);
   });
 });
+
+// ─── Borrado total ───────────────────────────────────────────────────────────
+//
+// Existe para que el laboratorio pueda pedirle al analizador que reenvie todo
+// desde cero. La deduplicacion por muestra + instante de analisis hace que un
+// "enviar todo" no reescriba lo ya guardado: sin vaciar la base, no hay
+// reimportacion posible.
+
+describe("XsRepo - wipeClinicalData", () => {
+  /** Como makeRepo pero devolviendo tambien el handle crudo, para contar filas. */
+  function makeRepoWithDb() {
+    const db = openDb({ path: ":memory:" });
+    return { db, repo: new XsRepo(db) };
+  }
+
+  const CLINICAS = [
+    "results",
+    "raw_messages",
+    "patients",
+    "result_values",
+    "histograms",
+    "morphology_flags",
+  ] as const;
+
+  function contar(db: ReturnType<typeof openDb>, tabla: string): number {
+    return (db.prepare(`SELECT COUNT(*) as n FROM ${tabla}`).get() as { n: number }).n;
+  }
+
+  /** Carga la base con un resultado normal, uno anormal y uno con histogramas. */
+  function sembrar(repo: XsRepo): void {
+    for (const [i, raw] of [ORU_NORMAL, ORU_ANORMAL, buildOruWithHistograms("9001")].entries()) {
+      const { hemogram } = mapMessageToHemogram(parseHl7(raw), {
+        id: `seed-${i}`,
+        receivedAt: T0,
+      });
+      repo.insertResult({ hemogram, rawHl7: raw, senderAddress: "127.0.0.1" });
+    }
+  }
+
+  test("deja las seis tablas clinicas en cero", () => {
+    const { db, repo } = makeRepoWithDb();
+    sembrar(repo);
+    for (const t of CLINICAS) expect(contar(db, t)).toBeGreaterThan(0);
+
+    repo.wipeClinicalData();
+
+    for (const t of CLINICAS) expect(contar(db, t)).toBe(0);
+    expect(repo.countResults()).toBe(0);
+  });
+
+  test("conserva la config del servicio y el rastro de auditoria", () => {
+    const { db, repo } = makeRepoWithDb();
+    sembrar(repo);
+    db.prepare(
+      `INSERT INTO service_config (key, value, updated_at) VALUES (?, ?, ?)`,
+    ).run("exportDir", "C:\\PSLab7\\Importa", T0.toISOString());
+    repo.appendAudit({
+      occurredAt: T0,
+      level: "info",
+      eventType: "algo.previo",
+      message: "esto tiene que sobrevivir",
+    });
+
+    repo.wipeClinicalData();
+
+    expect(contar(db, "service_config")).toBe(1);
+    // La linea previa MAS la del borrado.
+    expect(contar(db, "audit_log")).toBe(2);
+    const tipos = db
+      .prepare(`SELECT event_type FROM audit_log ORDER BY id`)
+      .all() as { event_type: string }[];
+    expect(tipos.map((r) => r.event_type)).toEqual(["algo.previo", "db.wiped"]);
+  });
+
+  test("los contadores que ve la operadora son exactos", () => {
+    const { repo } = makeRepoWithDb();
+    sembrar(repo); // 3 resultados, 3 raw, 1 paciente (los 3 fixtures comparten MR123456)
+
+    const r = repo.wipeClinicalData();
+
+    expect(r.deletedResults).toBe(3);
+    expect(r.deletedRawMessages).toBe(3);
+    expect(r.deletedPatients).toBeGreaterThan(0);
+    expect(r.durationMs).toBeGreaterThanOrEqual(0);
+    expect(r.vacuumed).toBe(true);
+  });
+
+  test("sobre una base vacia no tira y devuelve ceros", () => {
+    const { db, repo } = makeRepoWithDb();
+
+    const r = repo.wipeClinicalData();
+
+    expect(r.deletedResults).toBe(0);
+    expect(r.deletedRawMessages).toBe(0);
+    expect(r.deletedPatients).toBe(0);
+    // Un borrado de una base vacia es igual de intencional que cualquier otro:
+    // tambien queda anotado.
+    expect(contar(db, "audit_log")).toBe(1);
+  });
+
+  test("borra todo aunque las foreign keys esten apagadas", () => {
+    // El PRAGMA es POR CONEXION y hoy queda encendido solo porque openDb corre
+    // schema.sql en cada apertura. Este test es el que protege el borrado
+    // explicito hijo→padre de una futura "simplificacion" a un solo DELETE
+    // confiando en el ON DELETE CASCADE.
+    const { db, repo } = makeRepoWithDb();
+    sembrar(repo);
+    db.exec("PRAGMA foreign_keys = OFF");
+
+    repo.wipeClinicalData();
+
+    for (const t of CLINICAS) expect(contar(db, t)).toBe(0);
+  });
+
+  test("despues de borrar, el equipo puede reenviar EXACTAMENTE lo mismo", () => {
+    // Es la razon de ser de toda la funcionalidad: si este test pasa, el
+    // "enviar todo" del analizador reimporta. Mismo mensaje, misma muestra,
+    // mismo instante de analisis y mismo MSH-10.
+    const repo = makeRepo();
+    const msg = parseHl7(ORU_NORMAL);
+    const primera = mapMessageToHemogram(msg, { id: "antes", receivedAt: T0 }).hemogram;
+    repo.insertResult({ hemogram: primera, rawHl7: ORU_NORMAL, senderAddress: null });
+
+    // Sin el borrado, esto tiraria InsertResultDuplicateError.
+    repo.wipeClinicalData();
+
+    const reenvio = mapMessageToHemogram(msg, {
+      id: "despues",
+      receivedAt: new Date(T0.getTime() + 86_400_000),
+    }).hemogram;
+    expect(() =>
+      repo.insertResult({ hemogram: reenvio, rawHl7: ORU_NORMAL, senderAddress: null }),
+    ).not.toThrow();
+    expect(repo.countResults()).toBe(1);
+  });
+});

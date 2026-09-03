@@ -144,6 +144,54 @@ Respuesta `ExportRerunResponse`: `{ dir, attempted, written, failed, notFound, e
 Errores: `409 EXPORT_DISABLED` si no hay carpeta configurada, `409 EXPORT_DIR_UNAVAILABLE`
 si la carpeta no acepta escrituras (un solo error con el motivo, en vez de N iguales).
 
+### Mantenimiento
+
+#### `POST /api/maintenance/wipe-database`
+
+Borra **todos** los resultados guardados para que el analizador pueda mandarlos de nuevo
+desde cero con su función "enviar todo". Con auth.
+
+Existe porque la deduplicación es por muestra + instante de análisis: un reenvío del
+histórico no reescribe lo que ya está guardado, así que sin vaciar la base no hay
+reimportación posible. Es la forma de recuperar los hemogramas que se perdieron mientras
+deduplicábamos por MSH-10 (ver `docs/02-schema-db.md`).
+
+Body **obligatorio**: `{ "confirm": "BORRAR" }`.
+
+```bash
+curl -X POST http://127.0.0.1:7700/api/maintenance/wipe-database \
+  -H "X-XS20-Token: $TOKEN" -H "Content-Type: application/json" \
+  -d '{"confirm":"BORRAR"}'
+```
+
+Respuesta `WipeDatabaseResponse`:
+`{ deletedResults, deletedRawMessages, deletedPatients, sizeBefore, sizeAfter, vacuumed, durationMs }`.
+`vacuumed: false` significa que no se pudo compactar el archivo — los datos igual se
+borraron.
+
+| Situación | Status | `code` |
+| --- | --- | --- |
+| Sin token o token inválido | 401 | `UNAUTHORIZED` |
+| Cuerpo que no es JSON | 400 | `VALIDATION_ERROR` |
+| Falta `confirm` o no dice `BORRAR` | 400 | `VALIDATION_ERROR` |
+| La base no acepta escrituras | 409 | `DB_READONLY` |
+
+**Qué NO borra**: los `.txt` ya exportados a la carpeta del LIS quedan donde están y se van
+pisando a medida que el equipo reenvía cada muestra. Tampoco toca la configuración del
+servicio (`service_config`) ni el registro de auditoría (`audit_log`), donde queda anotado
+el borrado con sus contadores.
+
+**Por qué `POST` y no `DELETE`**: el `Access-Control-Allow-Methods` de esta API no incluye
+`DELETE`, así que un `fetch` con ese método desde el origen de la UI Tauri muere en el
+preflight sin llegar nunca al handler. Además `POST` ya es el patrón de todas las acciones.
+
+**Por qué el body pide la palabra**: la confirmación de la app vive del lado del cliente y
+un refactor la puede evaporar sin que ningún test del servicio se entere. Este endpoint es
+alcanzable por cualquier cosa que tenga el token — un `curl` de diagnóstico, alguien
+copiando el ejemplo de arriba — y sin `confirm` un body vacío borraría el laboratorio
+entero. Ojo: esto protege contra el **accidente**, no contra un atacante; cualquier proceso
+local que pueda leer `config/api-token.txt` puede mandar la palabra.
+
 ### Logs en vivo (SSE)
 
 #### `GET /api/logs/stream`

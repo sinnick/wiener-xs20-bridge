@@ -20,6 +20,7 @@ import {
   FolderOpen,
   FolderSearch,
   RefreshCw,
+  Trash2,
 } from "lucide-react";
 
 import {
@@ -28,6 +29,8 @@ import {
   getUpdateStatus,
   checkForUpdates,
   rerunExport,
+  wipeDatabase,
+  WIPE_CONFIRMATION,
   apiErrorMessage,
   isConnectionError,
   type ConnectionMode,
@@ -254,6 +257,24 @@ export function StatusView() {
                 <ConfigCard />
               </div>
             </div>
+
+            {/*
+              Mantenimiento va FUERA del grid a proposito: romper el ritmo
+              visual de las cards hace que no se lea como "una opcion mas de la
+              lista". Queda al final de un scroll largo, que es donde tiene que
+              estar algo que casi nunca hay que tocar.
+            */}
+            <section className="mt-10 border-t border-border pt-6">
+              <h2 className="mb-1 text-sm font-medium text-text-strong">Mantenimiento</h2>
+              <p className="mb-4 text-xs text-text-muted">
+                Cosas que casi nunca hay que hacer.
+              </p>
+              <WipeDatabaseCard
+                resultCount={health.database.resultCount}
+                disabled={phase === "offline"}
+                onWiped={status.refresh}
+              />
+            </section>
           </div>
         )}
       </div>
@@ -376,6 +397,164 @@ function ExportCard({ status }: { status: ExportStatus }) {
         </>
       )}
     </Card>
+  );
+}
+
+// ─── Borrar la base ──────────────────────────────────────────────────────────
+//
+// La accion mas destructiva de la app. Sirve para pedirle al analizador que
+// mande todo de nuevo desde cero: como deduplicamos por muestra + instante de
+// analisis, un "enviar todo" no reescribe lo que ya esta guardado, asi que sin
+// vaciar la base no hay reimportacion posible.
+//
+// No usa el helper Card: ese renderiza un <dl> de Rows y esto es prosa + input.
+
+type WipePaso = "reposo" | "armado" | "borrando" | "listo";
+
+function WipeDatabaseCard({
+  resultCount,
+  disabled,
+  onWiped,
+}: {
+  resultCount: number;
+  disabled: boolean;
+  onWiped: () => void;
+}) {
+  const [paso, setPaso] = useState<WipePaso>("reposo");
+  const [texto, setTexto] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [borrados, setBorrados] = useState<number | null>(null);
+  const [compactado, setCompactado] = useState(true);
+  const inputId = useId();
+
+  // Pelearle las mayusculas o un espacio de mas es friccion sin ninguna senal:
+  // quien escribio la palabra la escribio a proposito.
+  const confirmado = texto.trim().toUpperCase() === WIPE_CONFIRMATION;
+
+  const cancelar = () => {
+    setPaso("reposo");
+    setTexto("");
+    setError(null);
+  };
+
+  const borrar = async () => {
+    if (!confirmado || paso === "borrando") return;
+    setPaso("borrando");
+    setError(null);
+    try {
+      const r = await wipeDatabase();
+      setBorrados(r.deletedResults);
+      setCompactado(r.vacuumed);
+      setTexto("");
+      setPaso("listo");
+      onWiped();
+    } catch (e) {
+      setError(apiErrorMessage(e));
+      setPaso("armado");
+    }
+  };
+
+  return (
+    <div className="rounded-lg border border-high-text/20 bg-high-bg/40 p-5">
+      <div className="mb-3 flex items-center gap-2 text-high-text">
+        <Trash2 className="h-5 w-5" strokeWidth={1.5} aria-hidden="true" />
+        <h3 className="font-medium">Borrar la base de datos</h3>
+      </div>
+
+      {paso === "listo" ? (
+        <div aria-live="polite">
+          <p className="text-sm text-normal-text">
+            Listo. Se {borrados === 1 ? "borró" : "borraron"} {borrados}{" "}
+            {borrados === 1 ? "resultado" : "resultados"}. Ahora andá al analizador y usá{" "}
+            <strong>enviar todo</strong> para que los vuelva a mandar.
+          </p>
+          {!compactado && (
+            <p className="mt-2 text-xs text-text-muted">
+              El archivo de la base no se pudo compactar, pero los datos ya no están.
+            </p>
+          )}
+        </div>
+      ) : (
+        <>
+          <div className="space-y-2 text-sm text-text">
+            <p>
+              <strong>
+                Se {resultCount === 1 ? "borra" : "borran"} {resultCount === 1 ? "el" : "los"}{" "}
+                {resultCount} {resultCount === 1 ? "resultado guardado" : "resultados guardados"}.
+              </strong>{" "}
+              No se puede deshacer.
+            </p>
+            <p className="text-text-muted">
+              Sirve para que el analizador vuelva a mandar todo desde cero con su función
+              "enviar todo". Los .txt que ya están en la carpeta no se borran: se van
+              pisando a medida que el equipo reenvía cada muestra.
+            </p>
+            <p className="text-text-muted">
+              Hacelo con el analizador quieto: si justo está mandando un resultado, puede
+              perderse ese.
+            </p>
+          </div>
+
+          {paso === "reposo" ? (
+            <button
+              onClick={() => setPaso("armado")}
+              disabled={disabled}
+              className="mt-4 rounded-sm border border-high-text/40 px-3 py-1.5 text-sm text-high-text hover:bg-high-bg disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              Borrar la base…
+            </button>
+          ) : (
+            <div className="mt-4 space-y-3">
+              <Field
+                htmlFor={inputId}
+                label={`Escribí ${WIPE_CONFIRMATION} para confirmar`}
+                hint="No hay vuelta atrás."
+              >
+                <input
+                  id={inputId}
+                  type="text"
+                  value={texto}
+                  onChange={(e) => setTexto(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") void borrar();
+                    if (e.key === "Escape") cancelar();
+                  }}
+                  disabled={paso === "borrando"}
+                  autoFocus
+                  autoComplete="off"
+                  spellCheck={false}
+                  className={inputClass}
+                />
+              </Field>
+
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={() => void borrar()}
+                  disabled={!confirmado || paso === "borrando"}
+                  className="inline-flex items-center gap-2 rounded-sm bg-high-text px-4 py-2 text-sm font-medium text-surface hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  {paso === "borrando" && <Spinner className="h-4 w-4 text-surface" />}
+                  {paso === "borrando" ? "Borrando…" : "Borrar todo"}
+                </button>
+                <button
+                  onClick={cancelar}
+                  disabled={paso === "borrando"}
+                  className="rounded-sm px-3 py-2 text-sm text-text-muted hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  Cancelar
+                </button>
+              </div>
+
+              {error && (
+                <p role="alert" className="text-xs text-high-text">
+                  {error}
+                </p>
+              )}
+            </div>
+          )}
+        </>
+      )}
+    </div>
   );
 }
 
